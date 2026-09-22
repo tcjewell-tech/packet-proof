@@ -1,0 +1,68 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Packet Proof</title>
+    <style>
+      .zone-home { background: #e8f5e9; }
+      .zone-gateway { background: #fff8e1; }
+      .zone-beyond { background: #e3f2fd; }
+      /* Toggled by a class rather than an inline style attribute, which a
+         strict style-src would block once Tauri adds its own nonce. */
+      .hidden { display: none; }
+      .error { color: #b71c1c; }
+    </style>
+  </head>
+  <body>
+    <h1>Packet Proof</h1>
+    <div>
+      <button id="refresh-processes">Refresh process list</button>
+      <select id="process-select"></select>
+      <span id="process-status"></span>
+      <div id="connection-list"></div>
+    </div>
+    <script src="process-picker.js"></script>
+    <div>
+      <input id="target-input" value="1.1.1.1" />
+      <select id="duration-select">
+        <option value="900">15 min</option>
+        <option value="1800">30 min</option>
+        <option value="3600">60 min</option>
+        <option value="custom">Custom…</option>
+      </select>
+      <input id="custom-duration-input" type="number" min="1" placeholder="minutes" class="hidden" />
+      <button id="start-session">Start</button>
+      <button id="stop-session" disabled>Stop</button>
+      <button id="export-session">Export session PDF</button>
+      <span id="session-status"></span>
+      <span id="session-error" class="error"></span>
+    </div>
+    <script src="dashboard.js"></script>
+    <table>
+      <thead>
+        <tr><th>Hop</th><th>IP</th><th>Best</th><th>Avg</th><th>Worst</th><th>Loss</th><th>Zone</th></tr>
+      </thead>
+      <tbody id="hop-table-body"></tbody>
+    </table>
+    <script src="hop-table.js"></script>
+    <h2>Baseline history</h2>
+    <div>
+      <select id="chart-target-select">
+        <option value="1.1.1.1">1.1.1.1</option>
+        <option value="8.8.8.8">8.8.8.8</option>
+      </select>
+      <select id="chart-range-select">
+        <option value="6">6 hours</option>
+        <option value="24" selected>24 hours</option>
+        <option value="168">7 days</option>
+      </select>
+      <button id="refresh-charts">Refresh</button>
+      <button id="export-trend">Export trend PDF</button>
+    </div>
+    <p>Avg RTT (ms)</p>
+    <canvas id="rtt-chart" width="800" height="150"></canvas>
+    <p>Loss %</p>
+    <canvas id="loss-chart" width="800" height="150"></canvas>
+    <script src="charts.js"></script>
+  </body>
+</html>

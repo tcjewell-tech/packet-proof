@@ -97,7 +97,7 @@ stays clean on the other platform:
 
 ```bash
 cargo add windows --target "cfg(target_os = \"windows\")" --features \
-  Win32_NetworkManagement_IpHelper,Win32_NetworkManagement_Ndis,Win32_Foundation,Win32_Security,Win32_System_Threading,Win32_UI_Shell
+  Win32_NetworkManagement_IpHelper,Win32_NetworkManagement_Ndis,Win32_Networking_WinSock,Win32_Foundation,Win32_Security,Win32_System_Threading,Win32_UI_Shell,Win32_UI_WindowsAndMessaging
 cargo add libc --target "cfg(target_os = \"macos\")"
 ```
 
@@ -290,9 +290,24 @@ pub fn relaunch_elevated() -> ! {
 #[cfg(target_os = "macos")]
 pub fn relaunch_elevated() -> ! {
     let exe = std::env::current_exe().expect("current_exe");
+    // `do shell script` is TWO parsers deep: AppleScript parses the `-e`
+    // script text (so the path must be escaped as an AppleScript string
+    // literal), and then hands the resulting string to /bin/sh (so the
+    // path also needs shell quoting, or a space/`;`/`$` etc. either breaks
+    // a perfectly normal install path like "/Applications/Packet
+    // Proof.app/..." or — worse, since this runs `with administrator
+    // privileges` — lets a crafted path run arbitrary shell commands as
+    // root). `quoted form of` is AppleScript's built-in for producing a
+    // shell-safe single-quoted token at runtime, which handles the shell
+    // layer; the string literal escaping below still handles the
+    // AppleScript layer.
+    let escaped_path = exe
+        .display()
+        .to_string()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
     let script = format!(
-        "do shell script \"{}\" with administrator privileges",
-        exe.display()
+        "do shell script quoted form of \"{escaped_path}\" with administrator privileges"
     );
     let _ = std::process::Command::new("osascript").arg("-e").arg(script).status();
     std::process::exit(0)
@@ -937,7 +952,12 @@ git commit -m "End-to-end milestone: live hop table against a hard-coded target"
   derives `Debug, Clone, Copy, PartialEq, serde::Serialize`),
   `mtr::zone::is_private(ip: std::net::IpAddr) -> bool`,
   `mtr::zone::classify_hops(addrs: &[Option<std::net::IpAddr>]) -> Vec<Zone>`
-  (same length as input; index-for-index correspondence).
+  (same length as input; index-for-index correspondence),
+  `Zone::as_db_str(&self) -> &'static str` (returns `"home"` /
+  `"isp_gateway"` / `"beyond_isp"` — the exact strings the SQLite `zone`
+  column stores; any later code that needs a `Zone` as a DB string MUST use
+  this rather than `format!("{:?}", zone)`, since `Debug`'s output has no
+  underscore between words).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1013,13 +1033,22 @@ mod tests {
         let zones = classify_hops(&hops);
         assert_eq!(zones, vec![Zone::Home, Zone::Home]);
     }
+
+    #[test]
+    fn as_db_str_uses_snake_case_not_debug_format() {
+        assert_eq!(Zone::Home.as_db_str(), "home");
+        assert_eq!(Zone::IspGateway.as_db_str(), "isp_gateway");
+        assert_eq!(Zone::BeyondIsp.as_db_str(), "beyond_isp");
+    }
 }
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `cd src-tauri && cargo test mtr::zone::tests -- --nocapture`
-Expected: FAIL (`not implemented`) on every test.
+Expected: FAIL (`not implemented`) on every test that calls `is_private` or
+`classify_hops`; the `as_db_str` test fails to compile until Step 3 adds
+the method — that's expected too.
 
 - [ ] **Step 3: Implement**
 
@@ -1063,12 +1092,27 @@ pub fn classify_hops(addrs: &[Option<IpAddr>]) -> Vec<Zone> {
 
     zones
 }
+
+impl Zone {
+    /// The exact string the SQLite `zone` column stores (spec §4.4's
+    /// schema). Deliberately not `Debug`-derived — `Debug` on `IspGateway`
+    /// prints "IspGateway", not "isp_gateway", and every consumer that
+    /// reads the column back (report.rs, any future query) expects the
+    /// snake_case form.
+    pub fn as_db_str(&self) -> &'static str {
+        match self {
+            Zone::Home => "home",
+            Zone::IspGateway => "isp_gateway",
+            Zone::BeyondIsp => "beyond_isp",
+        }
+    }
+}
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd src-tauri && cargo test mtr::zone::tests -- --nocapture`
-Expected: PASS (6/6).
+Expected: PASS (7/7).
 
 - [ ] **Step 5: Register the module**
 
@@ -1350,9 +1394,22 @@ mod tests {
         }
         assert_eq!(r.current_interval(), Duration::from_millis(1500));
         for _ in 0..10 {
-            r.record_result(false); // fully recovered window, 0% loss < 5%
+            r.record_result(false);
         }
-        assert_eq!(r.current_interval(), Duration::from_millis(1000));
+        // Not 1000ms: the window is a sliding 10-sample buffer that
+        // re-evaluates on every call once full, not just once every 10
+        // calls. As `false`s displace the original `true`s one at a time,
+        // loss_pct stays above the 20% backoff threshold for the first 7
+        // of these 10 calls (driving the interval back up to the 3000ms
+        // ceiling), sits between the two thresholds (no change) for the
+        // next 2, and only drops below the 5% recovery threshold on the
+        // 10th call — at which point a single proportional recovery step
+        // takes 3000ms to 2000ms, not to the floor. (A single-step
+        // recovery reaching 1000ms here would only happen if the loop
+        // that reaches this point were implemented as an un-specified
+        // multi-step convergence-to-floor rather than the one proportional
+        // step above — a bug caught during this plan's own task review.)
+        assert_eq!(r.current_interval(), Duration::from_millis(2000));
     }
 
     #[test]
@@ -1494,9 +1551,19 @@ mod tests {
 
     /// Records every (target, interval) it was asked to spawn with, and lets
     /// the test drive rounds manually via the stored callback.
+    ///
+    /// The callback is stored as `Arc`, not `Box`, and `drive_round` clones
+    /// it out of the lock before invoking it. This matters because invoking
+    /// the callback can itself call back into `spawn` (SessionRunner's
+    /// restart-on-interval-change path does exactly this) — if `drive_round`
+    /// held the `last_callback` `MutexGuard` across the call (as it would
+    /// with `Box` + `.as_ref()`), that reentrant `spawn` call's own
+    /// `last_callback.lock()` would deadlock against itself on the same
+    /// thread, since `std::sync::Mutex` isn't reentrant. Cloning the `Arc`
+    /// out first drops the guard before the callback ever runs.
     struct FakeEngine {
         spawns: Mutex<Vec<Duration>>,
-        last_callback: Mutex<Option<Box<dyn Fn(RoundResult) + Send + Sync>>>,
+        last_callback: Mutex<Option<Arc<dyn Fn(RoundResult) + Send + Sync>>>,
     }
 
     impl FakeEngine {
@@ -1505,8 +1572,8 @@ mod tests {
         }
 
         fn drive_round(&self, hops: Vec<RawHop>) {
-            let cb = self.last_callback.lock().unwrap();
-            (cb.as_ref().unwrap())(RoundResult { hops });
+            let cb = self.last_callback.lock().unwrap().clone();
+            (cb.unwrap())(RoundResult { hops });
         }
     }
 
@@ -1518,7 +1585,7 @@ mod tests {
             on_round: Box<dyn Fn(RoundResult) + Send + Sync>,
         ) -> Result<EngineHandle, EngineError> {
             self.spawns.lock().unwrap().push(interval);
-            *self.last_callback.lock().unwrap() = Some(on_round);
+            *self.last_callback.lock().unwrap() = Some(Arc::from(on_round));
             Ok(EngineHandle { stop: Box::new(|| {}) })
         }
     }
@@ -2177,7 +2244,7 @@ fn on_round(shared: &Arc<Shared>, round: RoundResult) {
             rtt_avg_ms: hop.rtt_avg_ms,
             rtt_worst_ms: hop.rtt_worst_ms,
             loss_pct: hop.loss_pct,
-            zone: format!("{:?}", hop.zone).to_lowercase(),
+            zone: hop.zone.as_db_str().to_string(),
         });
     }
 
@@ -2460,7 +2527,7 @@ fn run_single_probe_round(
             rtt_avg_ms: hop.rtt_avg_ms,
             rtt_worst_ms: hop.rtt_worst_ms,
             loss_pct: hop.loss_pct,
-            zone: format!("{:?}", hop.zone).to_lowercase(),
+            zone: hop.zone.as_db_str().to_string(),
         });
     }
 }
@@ -2520,7 +2587,9 @@ pub fn stop_baseline(state: State<BaselineState>) -> Result<(), String> {
 .setup(|app| {
     let db_path = app.path().app_data_dir()?.join("packet_proof.sqlite");
     std::fs::create_dir_all(db_path.parent().unwrap())?;
-    let sink = db_writer::spawn_db_writer(db_path);
+    // .clone() here, not a plain move: Task 18 reuses `db_path` later in
+    // this same closure to open a second, read-only connection.
+    let sink = db_writer::spawn_db_writer(db_path.clone());
     app.manage(commands::DbSink(sink.clone()));
 
     let targets = mtr::baseline::fixed_targets(mtr::baseline::default_gateway());
@@ -3272,9 +3341,11 @@ impl SessionRunner {
 }
 ```
 
-Update the three existing `SessionRunner::start` call sites (Task 9's
-tests, Task 11's `commands::start_session`) to pass `None` for `duration`
-except where a duration is actually meaningful; the tests pass `None`.
+Update every existing `SessionRunner::start` call site to add the new
+final argument — that's four in total: the three tests in `mtr::session`'s
+`mod tests` (Task 9) plus `commands::start_session` (Task 11). All three
+tests pass `None`; `commands::start_session` is handled in Step 4 below,
+which passes the real duration through instead.
 
 - [ ] **Step 2: Add a test for the new parameter's plumbing**
 
