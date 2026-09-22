@@ -2,6 +2,8 @@ use serde::Serialize;
 
 #[cfg(target_os = "windows")]
 pub mod windows;
+#[cfg(target_os = "macos")]
+pub mod macos;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ProcessInfo {
