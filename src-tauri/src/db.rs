@@ -1,6 +1,6 @@
 use rusqlite::Connection;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct ProbeRecord {
     pub session_type: String,
     pub target: String,
@@ -111,6 +111,34 @@ impl Db {
 
         rows.collect()
     }
+
+    pub fn query_session(&self, session_id: &str) -> rusqlite::Result<Vec<ProbeRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT session_type, target, session_id, timestamp, hop_index, hop_ip,
+                    rtt_best_ms, rtt_avg_ms, rtt_worst_ms, loss_pct, zone
+             FROM probe_records
+             WHERE session_id = ?1
+             ORDER BY timestamp ASC, hop_index ASC",
+        )?;
+
+        let rows = stmt.query_map(rusqlite::params![session_id], |row| {
+            Ok(ProbeRecord {
+                session_type: row.get(0)?,
+                target: row.get(1)?,
+                session_id: row.get(2)?,
+                timestamp: row.get(3)?,
+                hop_index: row.get(4)?,
+                hop_ip: row.get(5)?,
+                rtt_best_ms: row.get(6)?,
+                rtt_avg_ms: row.get(7)?,
+                rtt_worst_ms: row.get(8)?,
+                loss_pct: row.get(9)?,
+                zone: row.get(10)?,
+            })
+        })?;
+
+        rows.collect()
+    }
 }
 
 #[cfg(test)]
@@ -179,5 +207,19 @@ mod tests {
         let results = db.query_history("1.1.1.1", Some("timed"), 0, 2000).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].session_type, "timed");
+    }
+
+    #[test]
+    fn query_session_returns_only_that_sessions_records() {
+        let db = test_db();
+        let mut a = sample("timed", "1.1.1.1", 1000, 1);
+        a.session_id = Some("session-a".to_string());
+        let mut b = sample("timed", "1.1.1.1", 1000, 1);
+        b.session_id = Some("session-b".to_string());
+        db.insert_record(&a).unwrap();
+        db.insert_record(&b).unwrap();
+
+        let results = db.query_session("session-a").unwrap();
+        assert_eq!(results, vec![a]);
     }
 }
