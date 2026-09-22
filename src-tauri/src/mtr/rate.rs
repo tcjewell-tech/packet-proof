@@ -35,13 +35,7 @@ impl AdaptiveRate {
         if loss_pct > BACKOFF_LOSS_THRESHOLD {
             self.interval_ms = ((self.interval_ms as f64 * FACTOR) as u64).min(CEILING_MS);
         } else if loss_pct < RECOVER_LOSS_THRESHOLD {
-            loop {
-                let new_interval = ((self.interval_ms as f64 / FACTOR) as u64).max(FLOOR_MS);
-                if new_interval == self.interval_ms {
-                    break;
-                }
-                self.interval_ms = new_interval;
-            }
+            self.interval_ms = ((self.interval_ms as f64 / FACTOR) as u64).max(FLOOR_MS);
         }
     }
 }
@@ -90,10 +84,19 @@ mod tests {
             r.record_result(true); // push it up to 1500ms first
         }
         assert_eq!(r.current_interval(), Duration::from_millis(1500));
+        // Recovery is a single proportional step per evaluation, evaluated on
+        // every push once the window is full (not batched once per 10). As
+        // `false` results displace the lingering `true`s one at a time, the
+        // window is briefly >20% loss again (e.g. 9 old losses + 1 new
+        // success), which re-triggers backoff up to the 3000ms ceiling
+        // before the window is finally clean enough (<5% loss) to take one
+        // recovery step back down: 3000 / 1.5 = 2000ms, not a jump to the
+        // floor. This intentionally exercises the gradual-recovery fix
+        // (single step, not "loop until convergence").
         for _ in 0..10 {
             r.record_result(false); // fully recovered window, 0% loss < 5%
         }
-        assert_eq!(r.current_interval(), Duration::from_millis(1000));
+        assert_eq!(r.current_interval(), Duration::from_millis(2000));
     }
 
     #[test]
