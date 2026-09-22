@@ -32,7 +32,7 @@ pub trait ProbeEngine: Send + Sync {
     ) -> Result<EngineHandle, EngineError>;
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct HopSnapshot {
     pub hop_index: u8,
     pub addr: Option<IpAddr>,

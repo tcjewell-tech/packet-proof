@@ -6,7 +6,12 @@
   </head>
   <body>
     <h1>Packet Proof</h1>
-    <div id="app">Loading…</div>
-    <script src="dashboard.js"></script>
+    <table>
+      <thead>
+        <tr><th>Hop</th><th>IP</th><th>Best</th><th>Avg</th><th>Worst</th><th>Loss</th></tr>
+      </thead>
+      <tbody id="hop-table-body"></tbody>
+    </table>
+    <script src="hop-table.js"></script>
   </body>
 </html>
