@@ -1,2 +1,9 @@
 .worktrees/
 .superpowers/
+
+# Tauri / Rust build output and local databases
+/src-tauri/target/
+/node_modules/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
