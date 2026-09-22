@@ -25,12 +25,21 @@ struct Shared {
 }
 
 impl SessionRunner {
+    /// Start a session.
+    ///
+    /// `on_end` is invoked **only** when a `duration` timer fires and stops
+    /// the session by itself — never on an explicit [`SessionRunner::stop`].
+    /// It exists so the owner of the runner (the Tauri managed
+    /// `SessionState`) can drop the now-finished runner and tell the frontend;
+    /// without it a timed session leaves a dead runner parked in state and
+    /// `start_session` keeps rejecting new sessions as "already running".
     pub fn start(
         engine: Arc<dyn ProbeEngine>,
         target: IpAddr,
         on_snapshot: Box<dyn Fn(Vec<HopSnapshot>) + Send + Sync>,
         record_sink: Sender<ProbeRecord>,
         duration: Option<Duration>,
+        on_end: Box<dyn FnOnce() + Send>,
     ) -> Self {
         let shared = Arc::new(Shared {
             engine,
@@ -52,11 +61,16 @@ impl SessionRunner {
             let stop_flag_for_timer = stop_flag.clone();
             std::thread::spawn(move || {
                 std::thread::sleep(duration);
-                if !stop_flag_for_timer.load(std::sync::atomic::Ordering::Relaxed) {
-                    if let Some(handle) = shared_for_timer.current_handle.lock().unwrap().take() {
-                        (handle.stop)();
-                    }
+                // Claim the stop. If a manual stop got there first this fails
+                // and the timer has nothing to end and nobody to tell.
+                use std::sync::atomic::Ordering::SeqCst;
+                if stop_flag_for_timer.compare_exchange(false, true, SeqCst, SeqCst).is_err() {
+                    return;
                 }
+                if let Some(handle) = shared_for_timer.current_handle.lock().unwrap().take() {
+                    (handle.stop)();
+                }
+                on_end();
             });
         }
 
@@ -64,8 +78,12 @@ impl SessionRunner {
 
         SessionRunner {
             stop: Some(Box::new(move || {
-                stop_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                stop_flag.store(true, std::sync::atomic::Ordering::SeqCst);
                 if let Some(handle) = shared.current_handle.lock().unwrap().take() {
+                    // Gated at the engine level: after this returns the round
+                    // callback is a permanent no-op, so nothing else touches
+                    // the aggregator, the rate controller or the DB sink under
+                    // this session's id.
                     (handle.stop)();
                 }
             })),
@@ -166,6 +184,16 @@ mod tests {
             let cb = self.last_callback.lock().unwrap().clone();
             (cb.unwrap())(RoundResult { hops });
         }
+
+        /// Drive a round through a callback captured earlier, standing in for
+        /// a detached trippy thread that is still alive after `stop()`.
+        fn drive_round_through(cb: &Arc<dyn Fn(RoundResult) + Send + Sync>, hops: Vec<RawHop>) {
+            cb(RoundResult { hops });
+        }
+
+        fn current_callback(&self) -> Arc<dyn Fn(RoundResult) + Send + Sync> {
+            self.last_callback.lock().unwrap().clone().unwrap()
+        }
     }
 
     impl ProbeEngine for FakeEngine {
@@ -176,8 +204,18 @@ mod tests {
             on_round: Box<dyn Fn(RoundResult) + Send + Sync>,
         ) -> Result<EngineHandle, EngineError> {
             self.spawns.lock().unwrap().push(interval);
-            *self.last_callback.lock().unwrap() = Some(Arc::from(on_round));
-            Ok(EngineHandle { stop: Box::new(|| {}) })
+            // Mirror `TrippyEngine::spawn` exactly: gate the callback and flip
+            // the flag from `stop()`. A no-op `stop` here is what let the
+            // "stop doesn't stop anything" bug hide from every test.
+            let (gated, stopped) = crate::mtr::engine::gate_on_stop(on_round);
+            *self.last_callback.lock().unwrap() = Some(Arc::from(gated));
+            Ok(EngineHandle {
+                stop: Box::new(move || stopped.store(true, std::sync::atomic::Ordering::SeqCst)),
+            })
+        }
+
+        fn probe_once(&self, _target: IpAddr, _round_duration: Duration) -> Result<RoundResult, EngineError> {
+            unreachable!("SessionRunner uses spawn, not probe_once")
         }
     }
 
@@ -195,6 +233,7 @@ mod tests {
             Box::new(|_| {}),
             tx,
             None,
+            Box::new(|| {}),
         );
         assert_eq!(*engine.spawns.lock().unwrap(), vec![Duration::from_millis(1000)]);
     }
@@ -211,6 +250,7 @@ mod tests {
             Box::new(move |snap| *received_for_cb.lock().unwrap() = Some(snap)),
             tx,
             None,
+            Box::new(|| {}),
         );
 
         engine.drive_round(vec![hop(1, Some("1.1.1.1"), Some(5.0))]);
@@ -230,6 +270,7 @@ mod tests {
             Box::new(|_| {}),
             tx,
             None,
+            Box::new(|| {}),
         );
 
         // Last hop lost 10 times in a row -> AdaptiveRate backs off past its
@@ -253,8 +294,107 @@ mod tests {
             Box::new(|_| {}),
             tx,
             Some(Duration::from_millis(50)),
+            Box::new(|| {}),
         );
         std::thread::sleep(Duration::from_millis(100));
         runner.stop(); // must not panic even though the auto-stop timer already fired
+    }
+
+    #[test]
+    fn a_stopped_session_ignores_rounds_from_a_still_running_tracer() {
+        let engine = FakeEngine::new();
+        let snapshots = Arc::new(Mutex::new(Vec::<Vec<HopSnapshot>>::new()));
+        let snapshots_for_cb = snapshots.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        let runner = SessionRunner::start(
+            engine.clone(),
+            "1.1.1.1".parse().unwrap(),
+            Box::new(move |snap| snapshots_for_cb.lock().unwrap().push(snap)),
+            tx,
+            None,
+            Box::new(|| {}),
+        );
+
+        // Hold on to the callback the way a detached trippy thread would: it
+        // survives `stop()` and would happily keep firing.
+        let leaked_callback = engine.current_callback();
+
+        engine.drive_round(vec![hop(1, Some("1.1.1.1"), Some(5.0))]);
+        assert_eq!(snapshots.lock().unwrap().len(), 1);
+        let after_one_round = snapshots.lock().unwrap().last().unwrap().clone();
+
+        runner.stop();
+
+        // The leaked tracer keeps delivering rounds. None of them may be seen.
+        for _ in 0..5 {
+            FakeEngine::drive_round_through(&leaked_callback, vec![hop(1, None, None)]);
+        }
+
+        assert_eq!(
+            snapshots.lock().unwrap().len(),
+            1,
+            "no snapshot may be emitted after stop()"
+        );
+        assert_eq!(
+            *snapshots.lock().unwrap().last().unwrap(),
+            after_one_round,
+            "the aggregator must not be mutated after stop()"
+        );
+        assert_eq!(
+            *engine.spawns.lock().unwrap(),
+            vec![Duration::from_millis(1000)],
+            "a stopped session must never respawn the engine"
+        );
+
+        let records: Vec<_> = rx.try_iter().collect();
+        assert_eq!(records.len(), 1, "only the pre-stop round may reach the DB sink");
+    }
+
+    #[test]
+    fn the_duration_timer_reports_that_the_session_ended_by_itself() {
+        let engine = FakeEngine::new();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let ended = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ended_for_cb = ended.clone();
+
+        let _runner = SessionRunner::start(
+            engine,
+            "1.1.1.1".parse().unwrap(),
+            Box::new(|_| {}),
+            tx,
+            Some(Duration::from_millis(30)),
+            Box::new(move || ended_for_cb.store(true, std::sync::atomic::Ordering::SeqCst)),
+        );
+
+        std::thread::sleep(Duration::from_millis(250));
+        assert!(
+            ended.load(std::sync::atomic::Ordering::SeqCst),
+            "the auto-stop timer must report the session ended so its owner can clear it"
+        );
+    }
+
+    #[test]
+    fn a_manual_stop_does_not_report_an_automatic_end() {
+        let engine = FakeEngine::new();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let ended = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ended_for_cb = ended.clone();
+
+        let runner = SessionRunner::start(
+            engine,
+            "1.1.1.1".parse().unwrap(),
+            Box::new(|_| {}),
+            tx,
+            Some(Duration::from_millis(60)),
+            Box::new(move || ended_for_cb.store(true, std::sync::atomic::Ordering::SeqCst)),
+        );
+        runner.stop();
+
+        std::thread::sleep(Duration::from_millis(250));
+        assert!(
+            !ended.load(std::sync::atomic::Ordering::SeqCst),
+            "stop_session already clears the state; a second clear would be a double-take"
+        );
     }
 }

@@ -35,6 +35,7 @@ pub fn start_session(
     }
 
     let app_for_callback = app.clone();
+    let app_for_end = app.clone();
     let runner = SessionRunner::start(
         Arc::new(TrippyEngine),
         target,
@@ -43,6 +44,15 @@ pub fn start_session(
         }),
         db_sink.0.clone(),
         duration_secs.map(std::time::Duration::from_secs),
+        // A timed session ends on its own. Clear the managed state here —
+        // exactly what `stop_session` does — or the finished runner sits in
+        // state forever and every later `start_session` is rejected as
+        // "a session is already running". Then tell the frontend so it can
+        // put its controls back the way a manual stop would.
+        Box::new(move || {
+            let _ = app_for_end.state::<SessionState>().0.lock().unwrap().take();
+            let _ = app_for_end.emit("session-ended", ());
+        }),
     );
     let _ = app.emit("session-started", serde_json::json!({ "session_id": runner.session_id }));
     *guard = Some(runner);

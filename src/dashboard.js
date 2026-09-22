@@ -8,8 +8,24 @@ document.addEventListener("DOMContentLoaded", () => {
 
 let currentSessionId = null;
 
+function setSessionRunning(running) {
+  const start = document.getElementById("start-session");
+  const stop = document.getElementById("stop-session");
+  if (start) start.disabled = running;
+  if (stop) stop.disabled = !running;
+  const indicator = document.getElementById("session-status");
+  if (indicator) indicator.textContent = running ? "Session running…" : "";
+}
+
 window.__TAURI__.event.listen("session-started", (event) => {
   currentSessionId = event.payload.session_id;
+  setSessionRunning(true);
+});
+
+// A timed session stops itself; the backend has already cleared its state, so
+// the controls have to come back exactly as they would after a manual stop.
+window.__TAURI__.event.listen("session-ended", () => {
+  setSessionRunning(false);
 });
 
 function currentDurationSecs() {
@@ -28,6 +44,7 @@ async function startSession(target, durationSecs) {
 
 async function stopSession() {
   await window.__TAURI__.core.invoke("stop_session");
+  setSessionRunning(false);
 }
 
 function currentTarget() {

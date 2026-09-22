@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::mtr::zone::{classify_hops, Zone};
@@ -21,8 +23,53 @@ pub enum EngineError {
     Other(String),
 }
 
+/// A handle to a running probe engine.
+///
+/// # What `stop()` guarantees
+///
+/// Calling `stop()` guarantees that the `on_round` callback handed to
+/// [`ProbeEngine::spawn`] **will not be invoked again** after `stop()`
+/// returns — so the caller's shared state (aggregators, rate controllers, DB
+/// sinks) is safe from a probe that is still winding down.
+///
+/// # What it does *not* guarantee
+///
+/// It does not guarantee that the underlying probe thread has terminated or
+/// that packets have stopped going out on the wire. `trippy_core::Tracer`
+/// exposes no cancellation API and is internally `Arc`-backed, so a tracer
+/// started with `max_rounds(None)` keeps its worker thread and raw socket
+/// until the process exits. The callback gating (see [`gate_on_stop`]) is
+/// what makes the guarantee above hold anyway.
+///
+/// Callers that need a genuinely terminating probe should ask for a bounded
+/// number of rounds instead — see [`ProbeEngine::probe_once`], which runs
+/// exactly one round and whose thread ends naturally.
 pub struct EngineHandle {
     pub stop: Box<dyn FnOnce() + Send>,
+}
+
+/// Wraps a round callback so it becomes a permanent no-op once the returned
+/// flag is set, and hands back the flag for an [`EngineHandle::stop`] closure
+/// to flip.
+///
+/// Every [`ProbeEngine`] implementation is expected to route its callback
+/// through this and to set the flag as the first thing `stop()` does. That is
+/// what makes `stop()`'s "the callback will not fire again" contract hold for
+/// engines (like trippy-core) whose worker thread cannot actually be killed:
+/// the detached thread may keep running, but it can no longer touch any state
+/// the caller owns.
+pub fn gate_on_stop(
+    on_round: Box<dyn Fn(RoundResult) + Send + Sync>,
+) -> (Box<dyn Fn(RoundResult) + Send + Sync>, Arc<AtomicBool>) {
+    let stopped = Arc::new(AtomicBool::new(false));
+    let stopped_for_cb = stopped.clone();
+    let gated = Box::new(move |round: RoundResult| {
+        if stopped_for_cb.load(Ordering::SeqCst) {
+            return;
+        }
+        on_round(round);
+    });
+    (gated, stopped)
 }
 
 pub trait ProbeEngine: Send + Sync {
@@ -32,6 +79,18 @@ pub trait ProbeEngine: Send + Sync {
         round_interval: Duration,
         on_round: Box<dyn Fn(RoundResult) + Send + Sync>,
     ) -> Result<EngineHandle, EngineError>;
+
+    /// Run exactly **one** probe round against `target`, blocking until it
+    /// completes (or fails), and return its result.
+    ///
+    /// Unlike [`ProbeEngine::spawn`] this leaves nothing running behind it:
+    /// the underlying tracer is bounded to a single round, so its thread and
+    /// socket are released before this returns. Callers that only want a
+    /// periodic sample (the baseline logger) must use this rather than
+    /// spawn-then-stop, which cannot actually stop anything.
+    ///
+    /// `round_duration` bounds how long the single round may take.
+    fn probe_once(&self, target: IpAddr, round_duration: Duration) -> Result<RoundResult, EngineError>;
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -179,6 +238,21 @@ mod tests {
         agg.record_round(&[hop(2, Some("2.2.2.2"), Some(2.0)), hop(1, Some("1.1.1.1"), Some(1.0))]);
         let snap = agg.snapshot();
         assert_eq!(snap.iter().map(|h| h.hop_index).collect::<Vec<_>>(), vec![1, 2]);
+    }
+
+    #[test]
+    fn gated_callback_fires_until_the_flag_is_set_then_never_again() {
+        let calls = Arc::new(std::sync::Mutex::new(0usize));
+        let calls_for_cb = calls.clone();
+        let (gated, stopped) = gate_on_stop(Box::new(move |_| *calls_for_cb.lock().unwrap() += 1));
+
+        gated(RoundResult { hops: vec![] });
+        assert_eq!(*calls.lock().unwrap(), 1);
+
+        stopped.store(true, Ordering::SeqCst);
+        gated(RoundResult { hops: vec![] });
+        gated(RoundResult { hops: vec![] });
+        assert_eq!(*calls.lock().unwrap(), 1, "callback must not fire after stop");
     }
 
     #[test]

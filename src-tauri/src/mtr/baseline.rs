@@ -70,43 +70,34 @@ impl BaselineLogger {
     }
 }
 
+/// The round duration used for a single baseline sample. Matches the interval
+/// the old spawn-based implementation used, so the data a baseline tick
+/// records is unchanged.
+const BASELINE_ROUND_DURATION: std::time::Duration = std::time::Duration::from_millis(200);
+
 fn run_single_probe_round(
     engine: &std::sync::Arc<dyn crate::mtr::engine::ProbeEngine>,
     target: IpAddr,
     record_sink: &std::sync::mpsc::Sender<crate::db::ProbeRecord>,
 ) {
     use crate::mtr::engine::HopAggregator;
-    use std::sync::{Arc, Mutex};
 
-    let aggregator = Arc::new(Mutex::new(HopAggregator::new()));
-    let agg_for_callback = aggregator.clone();
-    let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let done_for_callback = done.clone();
+    // One bounded round, not spawn-then-stop: `spawn` starts a tracer with
+    // `max_rounds(None)` whose thread cannot actually be stopped, so the old
+    // spawn/poll/stop shape leaked one live tracer (thread + raw socket +
+    // ongoing ICMP) per target per 60s tick, forever. `probe_once` runs a
+    // single round and returns once it is done, leaving nothing behind.
+    let Ok(round) = engine.probe_once(target, BASELINE_ROUND_DURATION) else {
+        // A failed baseline sample is not fatal: skip this tick's record for
+        // this target and let the next tick try again.
+        return;
+    };
 
-    let handle = engine
-        .spawn(
-            target,
-            std::time::Duration::from_millis(200),
-            Box::new(move |round| {
-                agg_for_callback.lock().unwrap().record_round(&round.hops);
-                done_for_callback.store(true, std::sync::atomic::Ordering::Relaxed);
-            }),
-        )
-        .expect("baseline probe spawn failed");
-
-    // One round is enough for a baseline sample; poll briefly for it, then
-    // tear the tracer down rather than leaving 3 tracers running between
-    // every 60s tick.
-    for _ in 0..25 {
-        if done.load(std::sync::atomic::Ordering::Relaxed) {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(200));
-    }
-    (handle.stop)();
+    let mut aggregator = HopAggregator::new();
+    aggregator.record_round(&round.hops);
 
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
-    for hop in aggregator.lock().unwrap().snapshot() {
+    for hop in aggregator.snapshot() {
         let _ = record_sink.send(crate::db::ProbeRecord {
             session_type: "baseline".to_string(),
             target: target.to_string(),
@@ -144,5 +135,88 @@ mod tests {
             targets,
             vec![CLOUDFLARE_DNS.parse::<IpAddr>().unwrap(), GOOGLE_DNS.parse().unwrap()]
         );
+    }
+
+    use crate::mtr::engine::{EngineError, EngineHandle, ProbeEngine, RawHop, RoundResult};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    /// Counts both entry points so a test can assert the baseline path takes
+    /// the bounded, self-terminating one and never starts a long-lived tracer.
+    struct CountingEngine {
+        spawns: AtomicUsize,
+        single_rounds: AtomicUsize,
+    }
+
+    impl ProbeEngine for CountingEngine {
+        fn spawn(
+            &self,
+            _target: IpAddr,
+            _round_interval: Duration,
+            _on_round: Box<dyn Fn(RoundResult) + Send + Sync>,
+        ) -> Result<EngineHandle, EngineError> {
+            self.spawns.fetch_add(1, Ordering::SeqCst);
+            Ok(EngineHandle { stop: Box::new(|| {}) })
+        }
+
+        fn probe_once(&self, _target: IpAddr, _round_duration: Duration) -> Result<RoundResult, EngineError> {
+            self.single_rounds.fetch_add(1, Ordering::SeqCst);
+            Ok(RoundResult {
+                hops: vec![
+                    RawHop { hop_index: 1, addr: Some("192.168.1.1".parse().unwrap()), rtt_ms: Some(1.0) },
+                    RawHop { hop_index: 2, addr: Some("1.1.1.1".parse().unwrap()), rtt_ms: Some(12.0) },
+                ],
+            })
+        }
+    }
+
+    #[test]
+    fn a_baseline_sample_runs_one_bounded_round_and_starts_no_tracer() {
+        let engine = Arc::new(CountingEngine { spawns: AtomicUsize::new(0), single_rounds: AtomicUsize::new(0) });
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        run_single_probe_round(
+            &(engine.clone() as Arc<dyn ProbeEngine>),
+            "1.1.1.1".parse().unwrap(),
+            &tx,
+        );
+
+        assert_eq!(engine.single_rounds.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            engine.spawns.load(Ordering::SeqCst),
+            0,
+            "baseline must not start a continuous tracer it cannot stop"
+        );
+
+        drop(tx);
+        let records: Vec<_> = rx.into_iter().collect();
+        assert_eq!(records.len(), 2, "one record per hop");
+        assert!(records.iter().all(|r| r.session_type == "baseline" && r.session_id.is_none()));
+        assert_eq!(records[1].hop_ip.as_deref(), Some("1.1.1.1"));
+    }
+
+    #[test]
+    fn a_failing_probe_records_nothing_and_does_not_panic() {
+        struct FailingEngine;
+        impl ProbeEngine for FailingEngine {
+            fn spawn(
+                &self,
+                _t: IpAddr,
+                _i: Duration,
+                _c: Box<dyn Fn(RoundResult) + Send + Sync>,
+            ) -> Result<EngineHandle, EngineError> {
+                unreachable!("baseline must not call spawn")
+            }
+            fn probe_once(&self, _t: IpAddr, _d: Duration) -> Result<RoundResult, EngineError> {
+                Err(EngineError::Other("no route to host".to_string()))
+            }
+        }
+
+        let engine: Arc<dyn ProbeEngine> = Arc::new(FailingEngine);
+        let (tx, rx) = std::sync::mpsc::channel();
+        run_single_probe_round(&engine, "1.1.1.1".parse().unwrap(), &tx);
+        drop(tx);
+        assert_eq!(rx.into_iter().count(), 0);
     }
 }

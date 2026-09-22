@@ -26,9 +26,10 @@
         <option value="custom">Custom…</option>
       </select>
       <input id="custom-duration-input" type="number" min="1" placeholder="minutes" style="display:none" />
-      <button onclick="startSession(currentTarget(), currentDurationSecs())">Start</button>
-      <button onclick="stopSession()">Stop</button>
-      <button onclick="exportSessionReport()">Export session PDF</button>
+      <button id="start-session" onclick="startSession(currentTarget(), currentDurationSecs())">Start</button>
+      <button id="stop-session" onclick="stopSession()" disabled>Stop</button>
+      <button id="export-session" onclick="exportSessionReport()">Export session PDF</button>
+      <span id="session-status"></span>
     </div>
     <script src="dashboard.js"></script>
     <table>
