@@ -64,5 +64,16 @@ async function loadConnectionsForSelectedProcess() {
   });
 }
 
+// Wired here rather than with inline `onclick`/`onchange` attributes: those
+// are inline scripts, which a `script-src 'self'` CSP blocks.
+document.addEventListener("DOMContentLoaded", () => {
+  document.getElementById("refresh-processes")?.addEventListener("click", () => {
+    loadProcessList();
+  });
+  document.getElementById("process-select")?.addEventListener("change", () => {
+    loadConnectionsForSelectedProcess().catch((err) => setProcessListStatus(`Could not read connections: ${err}`));
+  });
+});
+
 window.loadProcessList = loadProcessList;
 window.loadConnectionsForSelectedProcess = loadConnectionsForSelectedProcess;

@@ -66,3 +66,14 @@ async function exportTrendReport() {
   alert(`Report saved to ${path}`);
 }
 window.exportTrendReport = exportTrendReport;
+
+// Wired here rather than with inline `onclick` attributes: those are inline
+// scripts, which a `script-src 'self'` CSP blocks.
+document.addEventListener("DOMContentLoaded", () => {
+  document.getElementById("refresh-charts")?.addEventListener("click", () => {
+    loadBaselineCharts().catch((err) => alert(`Could not load baseline history: ${err}`));
+  });
+  document.getElementById("export-trend")?.addEventListener("click", () => {
+    exportTrendReport().catch((err) => alert(`Could not export the trend report: ${err}`));
+  });
+});
