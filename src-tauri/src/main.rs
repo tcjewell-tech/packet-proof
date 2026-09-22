@@ -6,6 +6,7 @@ mod db_writer;
 mod elevation;
 mod mtr;
 mod procnet;
+mod report;
 
 fn main() {
     if elevation::decide_relaunch(&elevation::check_elevation()) {
@@ -44,7 +45,8 @@ fn main() {
             commands::list_candidate_processes,
             commands::list_connections_for_pid,
             commands::get_baseline_history,
-            commands::get_session_history
+            commands::get_session_history,
+            commands::export_session_report
         ])
         .run(tauri::generate_context!())
         .expect("error while running Packet Proof");

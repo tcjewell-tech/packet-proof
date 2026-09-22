@@ -1,7 +1,7 @@
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::mtr::baseline::{default_gateway, fixed_targets, BaselineLogger};
 use crate::mtr::session::SessionRunner;
@@ -44,6 +44,7 @@ pub fn start_session(
         db_sink.0.clone(),
         duration_secs.map(std::time::Duration::from_secs),
     );
+    let _ = app.emit("session-started", serde_json::json!({ "session_id": runner.session_id }));
     *guard = Some(runner);
     Ok(())
 }
@@ -111,4 +112,22 @@ pub fn get_session_history(
 ) -> Result<Vec<crate::db::ProbeRecord>, String> {
     let conn = db.0.lock().unwrap();
     conn.query_session(&session_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn export_session_report(app: AppHandle, db: State<DbHandle>, session_id: String) -> Result<String, String> {
+    let records = {
+        let conn = db.0.lock().unwrap();
+        conn.query_session(&session_id).map_err(|e| e.to_string())?
+    };
+    if records.is_empty() {
+        return Err("no records found for that session".to_string());
+    }
+
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("reports");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let out_path = dir.join(format!("session-{session_id}.pdf"));
+
+    crate::report::generate_session_report(&records, &out_path)?;
+    Ok(out_path.to_string_lossy().to_string())
 }

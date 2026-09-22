@@ -6,6 +6,12 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 });
 
+let currentSessionId = null;
+
+window.__TAURI__.event.listen("session-started", (event) => {
+  currentSessionId = event.payload.session_id;
+});
+
 function currentDurationSecs() {
   const select = document.getElementById("duration-select");
   if (select.value === "custom") {
@@ -29,6 +35,16 @@ function currentTarget() {
   return picked ? picked.value : document.getElementById("target-input").value;
 }
 
+async function exportSessionReport() {
+  if (!currentSessionId) {
+    alert("Start a session first.");
+    return;
+  }
+  const path = await window.__TAURI__.core.invoke("export_session_report", { sessionId: currentSessionId });
+  alert(`Report saved to ${path}`);
+}
+
 window.startSession = startSession;
 window.stopSession = stopSession;
 window.currentTarget = currentTarget;
+window.exportSessionReport = exportSessionReport;

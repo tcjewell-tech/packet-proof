@@ -9,6 +9,7 @@ use crate::mtr::rate::AdaptiveRate;
 
 pub struct SessionRunner {
     stop: Option<Box<dyn FnOnce() + Send>>,
+    pub session_id: String,
 }
 
 struct Shared {
@@ -59,6 +60,8 @@ impl SessionRunner {
             });
         }
 
+        let session_id = shared.session_id.clone();
+
         SessionRunner {
             stop: Some(Box::new(move || {
                 stop_flag.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -66,6 +69,7 @@ impl SessionRunner {
                     (handle.stop)();
                 }
             })),
+            session_id,
         }
     }
 
