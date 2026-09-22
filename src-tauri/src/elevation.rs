@@ -75,9 +75,17 @@ pub fn relaunch_elevated() -> ! {
 #[cfg(target_os = "macos")]
 pub fn relaunch_elevated() -> ! {
     let exe = std::env::current_exe().expect("current_exe");
+    // Escaped, not interpolated raw: this string is executed `with
+    // administrator privileges` — an unescaped `"` or `\` in the path would
+    // break out of the AppleScript string literal and run arbitrary
+    // commands as root.
+    let escaped_path = exe
+        .display()
+        .to_string()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
     let script = format!(
-        "do shell script \"{}\" with administrator privileges",
-        exe.display()
+        "do shell script \"{escaped_path}\" with administrator privileges"
     );
     let _ = std::process::Command::new("osascript").arg("-e").arg(script).status();
     std::process::exit(0)
