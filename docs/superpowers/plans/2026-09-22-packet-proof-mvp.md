@@ -290,17 +290,24 @@ pub fn relaunch_elevated() -> ! {
 #[cfg(target_os = "macos")]
 pub fn relaunch_elevated() -> ! {
     let exe = std::env::current_exe().expect("current_exe");
-    // Escaped, not interpolated raw: this string is executed `with
-    // administrator privileges` — an unescaped `"` or `\` in the path would
-    // break out of the AppleScript string literal and run arbitrary
-    // commands as root.
+    // `do shell script` is TWO parsers deep: AppleScript parses the `-e`
+    // script text (so the path must be escaped as an AppleScript string
+    // literal), and then hands the resulting string to /bin/sh (so the
+    // path also needs shell quoting, or a space/`;`/`$` etc. either breaks
+    // a perfectly normal install path like "/Applications/Packet
+    // Proof.app/..." or — worse, since this runs `with administrator
+    // privileges` — lets a crafted path run arbitrary shell commands as
+    // root). `quoted form of` is AppleScript's built-in for producing a
+    // shell-safe single-quoted token at runtime, which handles the shell
+    // layer; the string literal escaping below still handles the
+    // AppleScript layer.
     let escaped_path = exe
         .display()
         .to_string()
         .replace('\\', "\\\\")
         .replace('"', "\\\"");
     let script = format!(
-        "do shell script \"{escaped_path}\" with administrator privileges"
+        "do shell script quoted form of \"{escaped_path}\" with administrator privileges"
     );
     let _ = std::process::Command::new("osascript").arg("-e").arg(script).status();
     std::process::exit(0)
