@@ -1551,9 +1551,19 @@ mod tests {
 
     /// Records every (target, interval) it was asked to spawn with, and lets
     /// the test drive rounds manually via the stored callback.
+    ///
+    /// The callback is stored as `Arc`, not `Box`, and `drive_round` clones
+    /// it out of the lock before invoking it. This matters because invoking
+    /// the callback can itself call back into `spawn` (SessionRunner's
+    /// restart-on-interval-change path does exactly this) — if `drive_round`
+    /// held the `last_callback` `MutexGuard` across the call (as it would
+    /// with `Box` + `.as_ref()`), that reentrant `spawn` call's own
+    /// `last_callback.lock()` would deadlock against itself on the same
+    /// thread, since `std::sync::Mutex` isn't reentrant. Cloning the `Arc`
+    /// out first drops the guard before the callback ever runs.
     struct FakeEngine {
         spawns: Mutex<Vec<Duration>>,
-        last_callback: Mutex<Option<Box<dyn Fn(RoundResult) + Send + Sync>>>,
+        last_callback: Mutex<Option<Arc<dyn Fn(RoundResult) + Send + Sync>>>,
     }
 
     impl FakeEngine {
@@ -1562,8 +1572,8 @@ mod tests {
         }
 
         fn drive_round(&self, hops: Vec<RawHop>) {
-            let cb = self.last_callback.lock().unwrap();
-            (cb.as_ref().unwrap())(RoundResult { hops });
+            let cb = self.last_callback.lock().unwrap().clone();
+            (cb.unwrap())(RoundResult { hops });
         }
     }
 
@@ -1575,7 +1585,7 @@ mod tests {
             on_round: Box<dyn Fn(RoundResult) + Send + Sync>,
         ) -> Result<EngineHandle, EngineError> {
             self.spawns.lock().unwrap().push(interval);
-            *self.last_callback.lock().unwrap() = Some(on_round);
+            *self.last_callback.lock().unwrap() = Some(Arc::from(on_round));
             Ok(EngineHandle { stop: Box::new(|| {}) })
         }
     }
