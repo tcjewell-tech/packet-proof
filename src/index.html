@@ -12,8 +12,9 @@
   <body>
     <h1>Packet Proof</h1>
     <div>
-      <button onclick="loadProcessList()">Refresh process list</button>
+      <button id="refresh-processes" onclick="loadProcessList()">Refresh process list</button>
       <select id="process-select" onchange="loadConnectionsForSelectedProcess()"></select>
+      <span id="process-status"></span>
       <div id="connection-list"></div>
     </div>
     <script src="process-picker.js"></script>

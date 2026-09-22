@@ -1,12 +1,31 @@
+function setProcessListStatus(message) {
+  const status = document.getElementById("process-status");
+  if (status) status.textContent = message;
+}
+
 async function loadProcessList() {
-  const processes = await window.__TAURI__.core.invoke("list_candidate_processes");
+  const button = document.getElementById("refresh-processes");
   const select = document.getElementById("process-select");
-  select.innerHTML = "";
-  for (const p of processes) {
-    const opt = document.createElement("option");
-    opt.value = String(p.pid);
-    opt.textContent = `${p.name} (pid ${p.pid})`;
-    select.appendChild(opt);
+
+  // Enumerating the OS connection table still takes a moment; without this
+  // the button looks dead and a failure disappears silently.
+  if (button) button.disabled = true;
+  setProcessListStatus("Loading…");
+
+  try {
+    const processes = await window.__TAURI__.core.invoke("list_candidate_processes");
+    select.innerHTML = "";
+    for (const p of processes) {
+      const opt = document.createElement("option");
+      opt.value = String(p.pid);
+      opt.textContent = `${p.name} (pid ${p.pid})`;
+      select.appendChild(opt);
+    }
+    setProcessListStatus(processes.length === 0 ? "No processes with active connections found." : "");
+  } catch (err) {
+    setProcessListStatus(`Could not list processes: ${err}`);
+  } finally {
+    if (button) button.disabled = false;
   }
 }
 
