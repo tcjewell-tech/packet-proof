@@ -8,8 +8,15 @@ use crate::mtr::trippy_engine::TrippyEngine;
 
 pub struct SessionState(pub Mutex<Option<SessionRunner>>);
 
+pub struct DbSink(pub std::sync::mpsc::Sender<crate::db::ProbeRecord>);
+
 #[tauri::command]
-pub fn start_session(app: AppHandle, state: State<SessionState>, target: String) -> Result<(), String> {
+pub fn start_session(
+    app: AppHandle,
+    state: State<SessionState>,
+    db_sink: State<DbSink>,
+    target: String,
+) -> Result<(), String> {
     let target: IpAddr = target.parse().map_err(|_| "invalid target IP".to_string())?;
     let mut guard = state.0.lock().unwrap();
     if guard.is_some() {
@@ -23,6 +30,7 @@ pub fn start_session(app: AppHandle, state: State<SessionState>, target: String)
         Box::new(move |snapshot| {
             let _ = app_for_callback.emit("hop-update", snapshot);
         }),
+        db_sink.0.clone(),
     );
     *guard = Some(runner);
     Ok(())
