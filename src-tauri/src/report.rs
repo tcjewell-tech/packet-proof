@@ -37,6 +37,24 @@ pub struct SessionSummary {
     pub worst_hop_rtt_ms: Option<f64>,
 }
 
+/// Pick the record that should represent each hop in a session report.
+///
+/// `query_session` returns rows ordered `timestamp ASC, hop_index ASC`, i.e.
+/// one full hop table per round, with each round's numbers being the
+/// *cumulative* session totals as of that round. A report wants the final
+/// cumulative picture, so the survivor for each hop must be its
+/// highest-timestamp record — not, as a stable sort by `hop_index` alone
+/// followed by `dedup_by_key` produced, round 1's near-zero loss and
+/// single-sample RTT.
+pub fn latest_record_per_hop(records: &[ProbeRecord]) -> Vec<&ProbeRecord> {
+    let mut by_hop: Vec<&ProbeRecord> = records.iter().collect();
+    // Newest first within each hop, so `dedup_by_key` (which keeps the first
+    // of each run) keeps the newest.
+    by_hop.sort_by_key(|r| (r.hop_index, std::cmp::Reverse(r.timestamp)));
+    by_hop.dedup_by_key(|r| r.hop_index);
+    by_hop
+}
+
 pub fn summarize_session(records: &[ProbeRecord]) -> SessionSummary {
     if records.is_empty() {
         return SessionSummary {
@@ -62,11 +80,27 @@ pub fn summarize_session(records: &[ProbeRecord]) -> SessionSummary {
 use genpdf::elements::{Break, Paragraph, TableLayout};
 use genpdf::{Document, SimplePageDecorator};
 
-pub fn generate_session_report(records: &[ProbeRecord], out_path: &std::path::Path) -> Result<(), String> {
+/// Load the report font family from `fonts_dir`.
+///
+/// The directory is a parameter rather than the hardcoded relative
+/// `"./fonts"` it used to be: a relative path resolves against the process
+/// CWD, which is the crate root under `cargo test`/`cargo tauri dev` and
+/// something else entirely in an installed app. Production callers
+/// (`commands.rs`) pass the path resolved from the bundled app resources;
+/// the smoke tests below pass `./fonts` directly.
+fn load_fonts(fonts_dir: &std::path::Path) -> Result<genpdf::fonts::FontFamily<genpdf::fonts::FontData>, String> {
+    genpdf::fonts::from_files(fonts_dir, "LiberationSans", None)
+        .map_err(|e| format!("failed to load fonts from {}: {e}", fonts_dir.display()))
+}
+
+pub fn generate_session_report(
+    records: &[ProbeRecord],
+    fonts_dir: &std::path::Path,
+    out_path: &std::path::Path,
+) -> Result<(), String> {
     let summary = summarize_session(records);
 
-    let font_family = genpdf::fonts::from_files("./fonts", "LiberationSans", None)
-        .map_err(|e| format!("failed to load fonts: {e}"))?;
+    let font_family = load_fonts(fonts_dir)?;
     let mut doc = Document::new(font_family);
     doc.set_title("Packet Proof — Session Report");
     let mut decorator = SimplePageDecorator::new();
@@ -92,11 +126,7 @@ pub fn generate_session_report(records: &[ProbeRecord], out_path: &std::path::Pa
     }
     row.push().map_err(|e| format!("{e}"))?;
 
-    let mut by_hop: Vec<&ProbeRecord> = records.iter().collect();
-    by_hop.sort_by_key(|r| r.hop_index);
-    by_hop.dedup_by_key(|r| r.hop_index);
-
-    for r in by_hop {
+    for r in latest_record_per_hop(records) {
         let mut row = table.row();
         row.push_element(Paragraph::new(r.hop_index.to_string()));
         row.push_element(Paragraph::new(r.hop_ip.clone().unwrap_or_else(|| "—".to_string())));
@@ -144,6 +174,7 @@ pub fn generate_trend_report(
     records: &[ProbeRecord],
     target: &str,
     range_label: &str,
+    fonts_dir: &std::path::Path,
     out_path: &std::path::Path,
 ) -> Result<(), String> {
     let points = records_to_trend_points(records);
@@ -151,8 +182,7 @@ pub fn generate_trend_report(
     let chart_path = out_path.with_extension("png");
     render_trend_chart_png(&points, &chart_path)?;
 
-    let font_family = genpdf::fonts::from_files("./fonts", "LiberationSans", None)
-        .map_err(|e| format!("failed to load fonts: {e}"))?;
+    let font_family = load_fonts(fonts_dir)?;
     let mut doc = Document::new(font_family);
     doc.set_title("Packet Proof — Trend Report");
     let mut decorator = SimplePageDecorator::new();
@@ -175,6 +205,13 @@ pub fn generate_trend_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `./fonts` fallback the smoke tests use: relative to the crate
+    /// root, which is cargo's CWD for `cargo test`. Production resolves the
+    /// bundled resource directory instead — see `commands.rs`.
+    fn test_fonts_dir() -> &'static std::path::Path {
+        std::path::Path::new("./fonts")
+    }
 
     fn record(hop: u8, loss: f64, worst: Option<f64>) -> ProbeRecord {
         ProbeRecord {
@@ -201,6 +238,67 @@ mod tests {
         assert_eq!(summary.hop_count, 3);
         assert!((summary.avg_loss_pct - 10.0).abs() < 0.001);
         assert_eq!(summary.worst_hop_rtt_ms, Some(40.0));
+    }
+
+    /// A record as `query_session` hands them back: one row per hop per
+    /// round, carrying that round's cumulative stats.
+    fn round_record(ts: i64, hop: u8, loss: f64, avg: f64) -> ProbeRecord {
+        ProbeRecord {
+            session_type: "timed".to_string(),
+            target: "1.1.1.1".to_string(),
+            session_id: Some("s1".to_string()),
+            timestamp: ts,
+            hop_index: hop,
+            hop_ip: Some("1.1.1.1".to_string()),
+            rtt_best_ms: Some(1.0),
+            rtt_avg_ms: Some(avg),
+            rtt_worst_ms: Some(avg * 2.0),
+            loss_pct: loss,
+            zone: "beyond_isp".to_string(),
+        }
+    }
+
+    #[test]
+    fn hop_table_keeps_the_final_cumulative_record_not_round_one() {
+        // query_session order: timestamp ASC, hop_index ASC.
+        let records = vec![
+            round_record(1000, 1, 0.0, 5.0),
+            round_record(1000, 2, 0.0, 9.0),
+            round_record(2000, 1, 12.5, 6.0),
+            round_record(2000, 2, 25.0, 11.0),
+            round_record(3000, 1, 20.0, 7.0),
+            round_record(3000, 2, 40.0, 13.0),
+        ];
+
+        let rows = latest_record_per_hop(&records);
+
+        assert_eq!(rows.len(), 2, "one row per hop");
+        assert_eq!(rows.iter().map(|r| r.hop_index).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(rows.iter().map(|r| r.timestamp).collect::<Vec<_>>(), vec![3000, 3000]);
+        assert_eq!(rows[0].loss_pct, 20.0);
+        assert_eq!(rows[1].loss_pct, 40.0);
+    }
+
+    #[test]
+    fn hop_table_is_unaffected_by_input_ordering() {
+        let mut records = vec![
+            round_record(3000, 2, 40.0, 13.0),
+            round_record(1000, 1, 0.0, 5.0),
+            round_record(2000, 2, 25.0, 11.0),
+            round_record(3000, 1, 20.0, 7.0),
+        ];
+        records.reverse();
+
+        let rows = latest_record_per_hop(&records);
+        assert_eq!(rows.iter().map(|r| (r.hop_index, r.loss_pct)).collect::<Vec<_>>(), vec![(1, 20.0), (2, 40.0)]);
+    }
+
+    #[test]
+    fn hop_table_of_a_single_round_is_that_round() {
+        let records = vec![round_record(1000, 1, 0.0, 5.0)];
+        let rows = latest_record_per_hop(&records);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].timestamp, 1000);
     }
 
     #[test]
@@ -250,15 +348,24 @@ mod tests {
     #[test]
     #[ignore]
     fn generates_a_real_pdf_from_synthetic_records() {
-        let records = vec![
-            record(1, 0.0, Some(5.0)),
-            record(2, 10.0, Some(40.0)),
-            record(3, 20.0, Some(15.0)),
-        ];
+        // Multi-round, the way a real session's rows arrive: the table must
+        // reflect the *last* round's cumulative numbers, not round 1's.
+        let mut records = vec![record(1, 0.0, Some(5.0)), record(2, 10.0, Some(40.0)), record(3, 20.0, Some(15.0))];
+        records.extend([
+            round_record(2000, 1, 3.0, 6.0),
+            round_record(2000, 2, 17.0, 11.0),
+            round_record(2000, 3, 31.0, 19.0),
+        ]);
+        let expected_final = latest_record_per_hop(&records);
+        assert!(
+            expected_final.iter().all(|r| r.timestamp == 2000),
+            "the table this PDF renders must come from the final round"
+        );
+
         let out_path = std::env::temp_dir().join("packet-proof-report-smoke-test.pdf");
         let _ = std::fs::remove_file(&out_path);
 
-        generate_session_report(&records, &out_path).expect("PDF generation should succeed");
+        generate_session_report(&records, test_fonts_dir(), &out_path).expect("PDF generation should succeed");
 
         let bytes = std::fs::read(&out_path).expect("output file should exist");
         assert!(!bytes.is_empty(), "PDF file should not be empty");
@@ -297,7 +404,8 @@ mod tests {
         let _ = std::fs::remove_file(&out_path);
         let _ = std::fs::remove_file(&chart_path);
 
-        generate_trend_report(&records, "1.1.1.1", "24 hours", &out_path).expect("trend PDF generation should succeed");
+        generate_trend_report(&records, "1.1.1.1", "24 hours", test_fonts_dir(), &out_path)
+            .expect("trend PDF generation should succeed");
 
         let bytes = std::fs::read(&out_path).expect("output file should exist");
         assert!(!bytes.is_empty(), "PDF file should not be empty");

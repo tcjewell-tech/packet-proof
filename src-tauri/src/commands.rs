@@ -124,6 +124,37 @@ pub fn get_session_history(
     conn.query_session(&session_id).map_err(|e| e.to_string())
 }
 
+/// The bundled report fonts.
+///
+/// `tauri.conf.json` ships `fonts/*` as a bundle resource; this resolves it
+/// against the installed app's resource directory. The old `"./fonts"` was
+/// relative to the process CWD, which is only the crate root under
+/// `cargo tauri dev`/`cargo test` — in a packaged build it resolved to
+/// wherever the user happened to launch from, and the files were not shipped
+/// at all.
+fn fonts_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    app.path()
+        .resolve("fonts", tauri::path::BaseDirectory::Resource)
+        .map_err(|e| format!("could not locate bundled report fonts: {e}"))
+}
+
+/// Reduce a frontend-supplied string to something safe to interpolate into a
+/// filename: ASCII alphanumerics plus `-` and `_`, everything else folded to
+/// `-`. Callers pass values that are structurally constrained already (a UUID,
+/// an IP address), so this is defence in depth against path traversal and
+/// reserved characters rather than a load-bearing check.
+fn sanitize_filename_component(raw: &str) -> String {
+    let cleaned: String = raw
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .collect();
+    if cleaned.is_empty() {
+        "unnamed".to_string()
+    } else {
+        cleaned
+    }
+}
+
 #[tauri::command]
 pub fn export_session_report(app: AppHandle, db: State<DbHandle>, session_id: String) -> Result<String, String> {
     let records = {
@@ -136,9 +167,10 @@ pub fn export_session_report(app: AppHandle, db: State<DbHandle>, session_id: St
 
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("reports");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let out_path = dir.join(format!("session-{session_id}.pdf"));
+    let safe_session_id = sanitize_filename_component(&session_id);
+    let out_path = dir.join(format!("session-{safe_session_id}.pdf"));
 
-    crate::report::generate_session_report(&records, &out_path)?;
+    crate::report::generate_session_report(&records, &fonts_dir(&app)?, &out_path)?;
     Ok(out_path.to_string_lossy().to_string())
 }
 
@@ -161,9 +193,40 @@ pub fn export_trend_report(
 
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("reports");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let safe_target = target.replace(':', "_").replace('.', "-");
+    let safe_target = sanitize_filename_component(&target);
     let out_path = dir.join(format!("trend-{safe_target}.pdf"));
 
-    crate::report::generate_trend_report(&records, &target, &range_label, &out_path)?;
+    crate::report::generate_trend_report(&records, &target, &range_label, &fonts_dir(&app)?, &out_path)?;
     Ok(out_path.to_string_lossy().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_filename_component;
+
+    #[test]
+    fn keeps_ordinary_identifiers_intact() {
+        assert_eq!(
+            sanitize_filename_component("5f2a1b3c-4d5e-6f70-8192-a3b4c5d6e7f8"),
+            "5f2a1b3c-4d5e-6f70-8192-a3b4c5d6e7f8"
+        );
+        assert_eq!(sanitize_filename_component("snake_case_1"), "snake_case_1");
+    }
+
+    #[test]
+    fn folds_path_separators_and_traversal() {
+        assert_eq!(sanitize_filename_component("../../etc/passwd"), "------etc-passwd");
+        assert_eq!(sanitize_filename_component(r"..\..\windows"), "------windows");
+    }
+
+    #[test]
+    fn folds_ip_punctuation_the_old_partial_filter_missed() {
+        assert_eq!(sanitize_filename_component("1.1.1.1"), "1-1-1-1");
+        assert_eq!(sanitize_filename_component("2001:db8::1"), "2001-db8--1");
+    }
+
+    #[test]
+    fn never_produces_an_empty_component() {
+        assert_eq!(sanitize_filename_component(""), "unnamed");
+    }
 }
