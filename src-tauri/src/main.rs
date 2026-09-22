@@ -7,6 +7,7 @@ mod elevation;
 mod mtr;
 mod procnet;
 mod report;
+mod tray;
 
 fn main() {
     if elevation::decide_relaunch(&elevation::check_elevation()) {
@@ -33,6 +34,8 @@ fn main() {
 
             let read_db = std::sync::Arc::new(std::sync::Mutex::new(db::Db::open(&db_path)?));
             app.manage(commands::DbHandle(read_db));
+
+            tray::build_tray(app)?;
 
             Ok(())
         })
