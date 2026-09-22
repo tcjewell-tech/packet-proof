@@ -37,5 +37,23 @@
       <tbody id="hop-table-body"></tbody>
     </table>
     <script src="hop-table.js"></script>
+    <h2>Baseline history</h2>
+    <div>
+      <select id="chart-target-select">
+        <option value="1.1.1.1">1.1.1.1</option>
+        <option value="8.8.8.8">8.8.8.8</option>
+      </select>
+      <select id="chart-range-select">
+        <option value="6">6 hours</option>
+        <option value="24" selected>24 hours</option>
+        <option value="168">7 days</option>
+      </select>
+      <button onclick="loadBaselineCharts()">Refresh</button>
+    </div>
+    <p>Avg RTT (ms)</p>
+    <canvas id="rtt-chart" width="800" height="150"></canvas>
+    <p>Loss %</p>
+    <canvas id="loss-chart" width="800" height="150"></canvas>
+    <script src="charts.js"></script>
   </body>
 </html>
