@@ -22,6 +22,11 @@ struct Shared {
     on_snapshot: Box<dyn Fn(Vec<HopSnapshot>) + Send + Sync>,
     current_handle: Mutex<Option<EngineHandle>>,
     record_sink: Sender<ProbeRecord>,
+    /// Set by whichever of the manual stop and the duration timer gets there
+    /// first, and never cleared. Read by `spawn_with_current_interval`, so a
+    /// round already past the engine's own gate cannot restart the tracer
+    /// after the session has ended.
+    stopped: std::sync::atomic::AtomicBool,
 }
 
 impl SessionRunner {
@@ -51,20 +56,19 @@ impl SessionRunner {
             on_snapshot,
             current_handle: Mutex::new(None),
             record_sink,
+            stopped: std::sync::atomic::AtomicBool::new(false),
         });
 
         spawn_with_current_interval(&shared);
 
-        let stop_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
         if let Some(duration) = duration {
             let shared_for_timer = shared.clone();
-            let stop_flag_for_timer = stop_flag.clone();
             std::thread::spawn(move || {
                 std::thread::sleep(duration);
                 // Claim the stop. If a manual stop got there first this fails
                 // and the timer has nothing to end and nobody to tell.
                 use std::sync::atomic::Ordering::SeqCst;
-                if stop_flag_for_timer.compare_exchange(false, true, SeqCst, SeqCst).is_err() {
+                if shared_for_timer.stopped.compare_exchange(false, true, SeqCst, SeqCst).is_err() {
                     return;
                 }
                 if let Some(handle) = shared_for_timer.current_handle.lock().unwrap().take() {
@@ -78,7 +82,11 @@ impl SessionRunner {
 
         SessionRunner {
             stop: Some(Box::new(move || {
-                stop_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                // Flag first, handle second: `spawn_with_current_interval`
+                // reads the flag while holding `current_handle`, so whichever
+                // of the two gets the lock first, the session ends up with no
+                // live, unstopped tracer.
+                shared.stopped.store(true, std::sync::atomic::Ordering::SeqCst);
                 if let Some(handle) = shared.current_handle.lock().unwrap().take() {
                     // Gated at the engine level: after this returns the round
                     // callback is a permanent no-op, so nothing else touches
@@ -102,6 +110,16 @@ fn spawn_with_current_interval(shared: &Arc<Shared>) {
     let interval = shared.rate.lock().unwrap().current_interval();
     let shared_for_callback = shared.clone();
 
+    // The check and the store happen under the same lock the stop path takes,
+    // so a round that was already in flight when the session stopped cannot
+    // sneak a fresh tracer in behind it. Without this, the adaptive-rate
+    // restart could start a tracer nobody holds a handle to, and that tracer
+    // would go on writing rows under a "stopped" session's id.
+    let mut slot = shared.current_handle.lock().unwrap();
+    if shared.stopped.load(std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+
     let handle = shared
         .engine
         .spawn(
@@ -111,7 +129,7 @@ fn spawn_with_current_interval(shared: &Arc<Shared>) {
         )
         .expect("engine spawn failed");
 
-    *shared.current_handle.lock().unwrap() = Some(handle);
+    *slot = Some(handle);
 }
 
 fn on_round(shared: &Arc<Shared>, round: RoundResult) {
@@ -349,6 +367,42 @@ mod tests {
 
         let records: Vec<_> = rx.try_iter().collect();
         assert_eq!(records.len(), 1, "only the pre-stop round may reach the DB sink");
+    }
+
+    /// The engine's callback gate stops a *detached* tracer from being heard,
+    /// but a round that was already past the gate when `stop()` landed could
+    /// still reach the adaptive-rate restart. This pins the second guard: once
+    /// the session is stopped, nothing spawns a tracer nobody can stop.
+    #[test]
+    fn a_stopped_session_refuses_to_respawn_the_engine() {
+        let engine = FakeEngine::new();
+        let (tx, _rx) = std::sync::mpsc::channel();
+
+        let shared = Arc::new(Shared {
+            engine: engine.clone(),
+            target: "1.1.1.1".parse().unwrap(),
+            target_label: "1.1.1.1".to_string(),
+            session_id: "s1".to_string(),
+            aggregator: Mutex::new(HopAggregator::new()),
+            rate: Mutex::new(AdaptiveRate::new()),
+            on_snapshot: Box::new(|_| {}),
+            current_handle: Mutex::new(None),
+            record_sink: tx,
+            stopped: std::sync::atomic::AtomicBool::new(false),
+        });
+
+        spawn_with_current_interval(&shared);
+        assert_eq!(engine.spawns.lock().unwrap().len(), 1);
+
+        shared.stopped.store(true, std::sync::atomic::Ordering::SeqCst);
+        spawn_with_current_interval(&shared);
+        spawn_with_current_interval(&shared);
+
+        assert_eq!(
+            engine.spawns.lock().unwrap().len(),
+            1,
+            "a stopped session must not start a tracer nobody holds a handle to"
+        );
     }
 
     #[test]
