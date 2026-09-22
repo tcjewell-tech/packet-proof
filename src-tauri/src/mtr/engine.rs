@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::time::Duration;
 
+use crate::mtr::zone::{classify_hops, Zone};
+
 #[derive(Debug, Clone)]
 pub struct RawHop {
     pub hop_index: u8,
@@ -40,6 +42,7 @@ pub struct HopSnapshot {
     pub rtt_avg_ms: Option<f64>,
     pub rtt_worst_ms: Option<f64>,
     pub loss_pct: f64,
+    pub zone: Zone,
 }
 
 struct HopAccumulator {
@@ -69,7 +72,7 @@ impl HopAccumulator {
         }
     }
 
-    fn snapshot(&self, hop_index: u8) -> HopSnapshot {
+    fn snapshot(&self, hop_index: u8, zone: Zone) -> HopSnapshot {
         let loss_pct = if self.sent == 0 {
             0.0
         } else {
@@ -82,6 +85,7 @@ impl HopAccumulator {
             rtt_avg_ms: if self.received == 0 { None } else { Some(self.rtt_sum_ms / self.received as f64) },
             rtt_worst_ms: self.rtt_worst_ms,
             loss_pct,
+            zone,
         }
     }
 }
@@ -102,7 +106,10 @@ impl HopAggregator {
     }
 
     pub fn snapshot(&self) -> Vec<HopSnapshot> {
-        self.hops.iter().map(|(idx, acc)| acc.snapshot(*idx)).collect()
+        let addrs: Vec<Option<IpAddr>> = self.hops.values().map(|acc| acc.last_addr).collect();
+        let zones = classify_hops(&addrs);
+
+        self.hops.iter().zip(zones).map(|((idx, acc), zone)| acc.snapshot(*idx, zone)).collect()
     }
 }
 
@@ -172,5 +179,14 @@ mod tests {
         agg.record_round(&[hop(2, Some("2.2.2.2"), Some(2.0)), hop(1, Some("1.1.1.1"), Some(1.0))]);
         let snap = agg.snapshot();
         assert_eq!(snap.iter().map(|h| h.hop_index).collect::<Vec<_>>(), vec![1, 2]);
+    }
+
+    #[test]
+    fn snapshot_includes_zone_classification() {
+        let mut agg = HopAggregator::new();
+        agg.record_round(&[hop(1, Some("192.168.1.1"), Some(1.0)), hop(2, Some("203.0.113.1"), Some(5.0))]);
+        let snap = agg.snapshot();
+        assert_eq!(snap[0].zone, crate::mtr::zone::Zone::Home);
+        assert_eq!(snap[1].zone, crate::mtr::zone::Zone::IspGateway);
     }
 }

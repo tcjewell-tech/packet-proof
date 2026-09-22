@@ -1,14 +1,18 @@
+const ZONE_LABELS = { home: "Home", isp_gateway: "ISP Gateway", beyond_isp: "Beyond ISP" };
+const ZONE_CLASSES = { home: "zone-home", isp_gateway: "zone-gateway", beyond_isp: "zone-beyond" };
+
 function renderHopTable(hops) {
   const rows = hops
     .map(
       (h) => `
-    <tr>
+    <tr class="${ZONE_CLASSES[h.zone]}">
       <td>${h.hop_index}</td>
       <td>${h.addr ?? "—"}</td>
       <td>${h.rtt_best_ms?.toFixed(1) ?? "—"}</td>
       <td>${h.rtt_avg_ms?.toFixed(1) ?? "—"}</td>
       <td>${h.rtt_worst_ms?.toFixed(1) ?? "—"}</td>
       <td>${h.loss_pct.toFixed(0)}%</td>
+      <td>${ZONE_LABELS[h.zone]}</td>
     </tr>`
     )
     .join("");
