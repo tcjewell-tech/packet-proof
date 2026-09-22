@@ -1,5 +1,8 @@
 use serde::Serialize;
 
+#[cfg(target_os = "windows")]
+pub mod windows;
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ProcessInfo {
     pub pid: u32,
