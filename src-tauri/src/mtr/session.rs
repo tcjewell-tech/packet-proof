@@ -29,6 +29,7 @@ impl SessionRunner {
         target: IpAddr,
         on_snapshot: Box<dyn Fn(Vec<HopSnapshot>) + Send + Sync>,
         record_sink: Sender<ProbeRecord>,
+        duration: Option<Duration>,
     ) -> Self {
         let shared = Arc::new(Shared {
             engine,
@@ -44,8 +45,23 @@ impl SessionRunner {
 
         spawn_with_current_interval(&shared);
 
+        let stop_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        if let Some(duration) = duration {
+            let shared_for_timer = shared.clone();
+            let stop_flag_for_timer = stop_flag.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(duration);
+                if !stop_flag_for_timer.load(std::sync::atomic::Ordering::Relaxed) {
+                    if let Some(handle) = shared_for_timer.current_handle.lock().unwrap().take() {
+                        (handle.stop)();
+                    }
+                }
+            });
+        }
+
         SessionRunner {
             stop: Some(Box::new(move || {
+                stop_flag.store(true, std::sync::atomic::Ordering::Relaxed);
                 if let Some(handle) = shared.current_handle.lock().unwrap().take() {
                     (handle.stop)();
                 }
@@ -169,8 +185,13 @@ mod tests {
     fn starts_with_a_one_second_interval() {
         let engine = FakeEngine::new();
         let (tx, _rx) = std::sync::mpsc::channel();
-        let _runner =
-            SessionRunner::start(engine.clone(), "1.1.1.1".parse().unwrap(), Box::new(|_| {}), tx);
+        let _runner = SessionRunner::start(
+            engine.clone(),
+            "1.1.1.1".parse().unwrap(),
+            Box::new(|_| {}),
+            tx,
+            None,
+        );
         assert_eq!(*engine.spawns.lock().unwrap(), vec![Duration::from_millis(1000)]);
     }
 
@@ -185,6 +206,7 @@ mod tests {
             "1.1.1.1".parse().unwrap(),
             Box::new(move |snap| *received_for_cb.lock().unwrap() = Some(snap)),
             tx,
+            None,
         );
 
         engine.drive_round(vec![hop(1, Some("1.1.1.1"), Some(5.0))]);
@@ -198,8 +220,13 @@ mod tests {
     fn restarts_engine_with_new_interval_once_rate_backs_off() {
         let engine = FakeEngine::new();
         let (tx, _rx) = std::sync::mpsc::channel();
-        let _runner =
-            SessionRunner::start(engine.clone(), "1.1.1.1".parse().unwrap(), Box::new(|_| {}), tx);
+        let _runner = SessionRunner::start(
+            engine.clone(),
+            "1.1.1.1".parse().unwrap(),
+            Box::new(|_| {}),
+            tx,
+            None,
+        );
 
         // Last hop lost 10 times in a row -> AdaptiveRate backs off past its
         // window-full threshold, which must trigger a respawn.
@@ -210,5 +237,20 @@ mod tests {
         let spawns = engine.spawns.lock().unwrap();
         assert_eq!(spawns.len(), 2);
         assert_eq!(spawns[1], Duration::from_millis(1500));
+    }
+
+    #[test]
+    fn accepts_a_duration_without_panicking() {
+        let engine = FakeEngine::new();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let runner = SessionRunner::start(
+            engine,
+            "1.1.1.1".parse().unwrap(),
+            Box::new(|_| {}),
+            tx,
+            Some(Duration::from_millis(50)),
+        );
+        std::thread::sleep(Duration::from_millis(100));
+        runner.stop(); // must not panic even though the auto-stop timer already fired
     }
 }

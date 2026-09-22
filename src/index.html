@@ -19,7 +19,14 @@
     <script src="process-picker.js"></script>
     <div>
       <input id="target-input" value="1.1.1.1" />
-      <button onclick="startSession(currentTarget())">Start</button>
+      <select id="duration-select">
+        <option value="900">15 min</option>
+        <option value="1800">30 min</option>
+        <option value="3600">60 min</option>
+        <option value="custom">Custom…</option>
+      </select>
+      <input id="custom-duration-input" type="number" min="1" placeholder="minutes" style="display:none" />
+      <button onclick="startSession(currentTarget(), currentDurationSecs())">Start</button>
       <button onclick="stopSession()">Stop</button>
     </div>
     <script src="dashboard.js"></script>

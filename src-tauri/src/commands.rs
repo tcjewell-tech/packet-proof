@@ -20,6 +20,7 @@ pub fn start_session(
     state: State<SessionState>,
     db_sink: State<DbSink>,
     target: String,
+    duration_secs: Option<u64>,
 ) -> Result<(), String> {
     let target: IpAddr = target.parse().map_err(|_| "invalid target IP".to_string())?;
     let mut guard = state.0.lock().unwrap();
@@ -35,6 +36,7 @@ pub fn start_session(
             let _ = app_for_callback.emit("hop-update", snapshot);
         }),
         db_sink.0.clone(),
+        duration_secs.map(std::time::Duration::from_secs),
     );
     *guard = Some(runner);
     Ok(())
