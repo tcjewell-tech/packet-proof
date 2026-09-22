@@ -1394,9 +1394,22 @@ mod tests {
         }
         assert_eq!(r.current_interval(), Duration::from_millis(1500));
         for _ in 0..10 {
-            r.record_result(false); // fully recovered window, 0% loss < 5%
+            r.record_result(false);
         }
-        assert_eq!(r.current_interval(), Duration::from_millis(1000));
+        // Not 1000ms: the window is a sliding 10-sample buffer that
+        // re-evaluates on every call once full, not just once every 10
+        // calls. As `false`s displace the original `true`s one at a time,
+        // loss_pct stays above the 20% backoff threshold for the first 7
+        // of these 10 calls (driving the interval back up to the 3000ms
+        // ceiling), sits between the two thresholds (no change) for the
+        // next 2, and only drops below the 5% recovery threshold on the
+        // 10th call — at which point a single proportional recovery step
+        // takes 3000ms to 2000ms, not to the floor. (A single-step
+        // recovery reaching 1000ms here would only happen if the loop
+        // that reaches this point were implemented as an un-specified
+        // multi-step convergence-to-floor rather than the one proportional
+        // step above — a bug caught during this plan's own task review.)
+        assert_eq!(r.current_interval(), Duration::from_millis(2000));
     }
 
     #[test]
