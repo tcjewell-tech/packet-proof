@@ -1,9 +1,13 @@
 async function loadProcessList() {
   const processes = await window.__TAURI__.core.invoke("list_candidate_processes");
   const select = document.getElementById("process-select");
-  select.innerHTML = processes
-    .map((p) => `<option value="${p.pid}">${p.name} (pid ${p.pid})</option>`)
-    .join("");
+  select.innerHTML = "";
+  for (const p of processes) {
+    const opt = document.createElement("option");
+    opt.value = String(p.pid);
+    opt.textContent = `${p.name} (pid ${p.pid})`;
+    select.appendChild(opt);
+  }
 }
 
 async function loadConnectionsForSelectedProcess() {
@@ -19,15 +23,26 @@ async function loadConnectionsForSelectedProcess() {
     return;
   }
 
-  container.innerHTML = result.endpoints
-    .map(
-      (e) => `
-      <label>
-        <input type="radio" name="candidate-target" value="${e.remote_ip}" />
-        ${e.remote_ip}:${e.remote_port} (${e.protocol.toUpperCase()})
-      </label>`
-    )
-    .join("<br/>");
+  container.innerHTML = "";
+  result.endpoints.forEach((e, index) => {
+    if (index > 0) {
+      container.appendChild(document.createElement("br"));
+    }
+
+    const label = document.createElement("label");
+
+    const input = document.createElement("input");
+    input.type = "radio";
+    input.name = "candidate-target";
+    input.value = e.remote_ip;
+    label.appendChild(input);
+
+    label.appendChild(
+      document.createTextNode(` ${e.remote_ip}:${e.remote_port} (${e.protocol.toUpperCase()})`)
+    );
+
+    container.appendChild(label);
+  });
 }
 
 window.loadProcessList = loadProcessList;
