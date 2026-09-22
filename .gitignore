@@ -3,6 +3,7 @@
 
 # Tauri / Rust build output and local databases
 /src-tauri/target/
+/src-tauri/gen/schemas/
 /node_modules/
 *.sqlite
 *.sqlite-wal
