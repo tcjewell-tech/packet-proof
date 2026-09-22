@@ -23,7 +23,3 @@ function renderHopTable(hops) {
 window.__TAURI__.event.listen("hop-update", (event) => {
   renderHopTable(event.payload);
 });
-
-window.__TAURI__.core.invoke("start_demo_session").catch((err) => {
-  console.error("start_demo_session failed:", err);
-});

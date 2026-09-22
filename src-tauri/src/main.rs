@@ -10,8 +10,8 @@ fn main() {
     }
 
     tauri::Builder::default()
-        .manage(commands::DemoState(std::sync::Mutex::new(None)))
-        .invoke_handler(tauri::generate_handler![commands::start_demo_session])
+        .manage(commands::SessionState(std::sync::Mutex::new(None)))
+        .invoke_handler(tauri::generate_handler![commands::start_session, commands::stop_session])
         .run(tauri::generate_context!())
         .expect("error while running Packet Proof");
 }
