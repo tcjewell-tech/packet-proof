@@ -53,3 +53,16 @@ async function loadBaselineCharts() {
 }
 
 window.loadBaselineCharts = loadBaselineCharts;
+
+async function exportTrendReport() {
+  const target = document.getElementById("chart-target-select").value;
+  const rangeSelect = document.getElementById("chart-range-select");
+  const rangeHours = Number(rangeSelect.value);
+  const rangeLabel = rangeSelect.selectedOptions[0].textContent;
+  const until = Math.floor(Date.now() / 1000);
+  const since = until - rangeHours * 3600;
+
+  const path = await window.__TAURI__.core.invoke("export_trend_report", { target, since, until, rangeLabel });
+  alert(`Report saved to ${path}`);
+}
+window.exportTrendReport = exportTrendReport;

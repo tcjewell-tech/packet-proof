@@ -131,3 +131,29 @@ pub fn export_session_report(app: AppHandle, db: State<DbHandle>, session_id: St
     crate::report::generate_session_report(&records, &out_path)?;
     Ok(out_path.to_string_lossy().to_string())
 }
+
+#[tauri::command]
+pub fn export_trend_report(
+    app: AppHandle,
+    db: State<DbHandle>,
+    target: String,
+    since: i64,
+    until: i64,
+    range_label: String,
+) -> Result<String, String> {
+    let records = {
+        let conn = db.0.lock().unwrap();
+        conn.query_history(&target, Some("baseline"), since, until).map_err(|e| e.to_string())?
+    };
+    if records.is_empty() {
+        return Err("no baseline records found for that range".to_string());
+    }
+
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("reports");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let safe_target = target.replace(':', "_").replace('.', "-");
+    let out_path = dir.join(format!("trend-{safe_target}.pdf"));
+
+    crate::report::generate_trend_report(&records, &target, &range_label, &out_path)?;
+    Ok(out_path.to_string_lossy().to_string())
+}

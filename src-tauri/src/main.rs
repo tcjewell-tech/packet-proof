@@ -46,7 +46,8 @@ fn main() {
             commands::list_connections_for_pid,
             commands::get_baseline_history,
             commands::get_session_history,
-            commands::export_session_report
+            commands::export_session_report,
+            commands::export_trend_report
         ])
         .run(tauri::generate_context!())
         .expect("error while running Packet Proof");
