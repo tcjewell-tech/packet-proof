@@ -3,10 +3,13 @@ use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, Emitter, State};
 
+use crate::mtr::baseline::{default_gateway, fixed_targets, BaselineLogger};
 use crate::mtr::session::SessionRunner;
 use crate::mtr::trippy_engine::TrippyEngine;
 
 pub struct SessionState(pub Mutex<Option<SessionRunner>>);
+
+pub struct BaselineState(pub Mutex<Option<BaselineLogger>>);
 
 pub struct DbSink(pub std::sync::mpsc::Sender<crate::db::ProbeRecord>);
 
@@ -44,5 +47,28 @@ pub fn stop_session(state: State<SessionState>) -> Result<(), String> {
         Ok(())
     } else {
         Err("no session is running".to_string())
+    }
+}
+
+#[tauri::command]
+pub fn start_baseline(state: State<BaselineState>, db_sink: State<DbSink>) -> Result<(), String> {
+    let mut guard = state.0.lock().unwrap();
+    if guard.is_some() {
+        return Err("baseline is already running".to_string());
+    }
+    let targets = fixed_targets(default_gateway());
+    let logger = BaselineLogger::start(Arc::new(TrippyEngine), targets, db_sink.0.clone());
+    *guard = Some(logger);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn stop_baseline(state: State<BaselineState>) -> Result<(), String> {
+    let mut guard = state.0.lock().unwrap();
+    if let Some(logger) = guard.take() {
+        logger.stop();
+        Ok(())
+    } else {
+        Err("baseline is not running".to_string())
     }
 }
