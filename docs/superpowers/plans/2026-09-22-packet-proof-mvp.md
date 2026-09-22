@@ -97,7 +97,7 @@ stays clean on the other platform:
 
 ```bash
 cargo add windows --target "cfg(target_os = \"windows\")" --features \
-  Win32_NetworkManagement_IpHelper,Win32_NetworkManagement_Ndis,Win32_Foundation,Win32_Security,Win32_System_Threading,Win32_UI_Shell
+  Win32_NetworkManagement_IpHelper,Win32_NetworkManagement_Ndis,Win32_Networking_WinSock,Win32_Foundation,Win32_Security,Win32_System_Threading,Win32_UI_Shell,Win32_UI_WindowsAndMessaging
 cargo add libc --target "cfg(target_os = \"macos\")"
 ```
 
@@ -937,7 +937,12 @@ git commit -m "End-to-end milestone: live hop table against a hard-coded target"
   derives `Debug, Clone, Copy, PartialEq, serde::Serialize`),
   `mtr::zone::is_private(ip: std::net::IpAddr) -> bool`,
   `mtr::zone::classify_hops(addrs: &[Option<std::net::IpAddr>]) -> Vec<Zone>`
-  (same length as input; index-for-index correspondence).
+  (same length as input; index-for-index correspondence),
+  `Zone::as_db_str(&self) -> &'static str` (returns `"home"` /
+  `"isp_gateway"` / `"beyond_isp"` — the exact strings the SQLite `zone`
+  column stores; any later code that needs a `Zone` as a DB string MUST use
+  this rather than `format!("{:?}", zone)`, since `Debug`'s output has no
+  underscore between words).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1013,13 +1018,22 @@ mod tests {
         let zones = classify_hops(&hops);
         assert_eq!(zones, vec![Zone::Home, Zone::Home]);
     }
+
+    #[test]
+    fn as_db_str_uses_snake_case_not_debug_format() {
+        assert_eq!(Zone::Home.as_db_str(), "home");
+        assert_eq!(Zone::IspGateway.as_db_str(), "isp_gateway");
+        assert_eq!(Zone::BeyondIsp.as_db_str(), "beyond_isp");
+    }
 }
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `cd src-tauri && cargo test mtr::zone::tests -- --nocapture`
-Expected: FAIL (`not implemented`) on every test.
+Expected: FAIL (`not implemented`) on every test that calls `is_private` or
+`classify_hops`; the `as_db_str` test fails to compile until Step 3 adds
+the method — that's expected too.
 
 - [ ] **Step 3: Implement**
 
@@ -1063,12 +1077,27 @@ pub fn classify_hops(addrs: &[Option<IpAddr>]) -> Vec<Zone> {
 
     zones
 }
+
+impl Zone {
+    /// The exact string the SQLite `zone` column stores (spec §4.4's
+    /// schema). Deliberately not `Debug`-derived — `Debug` on `IspGateway`
+    /// prints "IspGateway", not "isp_gateway", and every consumer that
+    /// reads the column back (report.rs, any future query) expects the
+    /// snake_case form.
+    pub fn as_db_str(&self) -> &'static str {
+        match self {
+            Zone::Home => "home",
+            Zone::IspGateway => "isp_gateway",
+            Zone::BeyondIsp => "beyond_isp",
+        }
+    }
+}
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cd src-tauri && cargo test mtr::zone::tests -- --nocapture`
-Expected: PASS (6/6).
+Expected: PASS (7/7).
 
 - [ ] **Step 5: Register the module**
 
@@ -2177,7 +2206,7 @@ fn on_round(shared: &Arc<Shared>, round: RoundResult) {
             rtt_avg_ms: hop.rtt_avg_ms,
             rtt_worst_ms: hop.rtt_worst_ms,
             loss_pct: hop.loss_pct,
-            zone: format!("{:?}", hop.zone).to_lowercase(),
+            zone: hop.zone.as_db_str().to_string(),
         });
     }
 
@@ -2460,7 +2489,7 @@ fn run_single_probe_round(
             rtt_avg_ms: hop.rtt_avg_ms,
             rtt_worst_ms: hop.rtt_worst_ms,
             loss_pct: hop.loss_pct,
-            zone: format!("{:?}", hop.zone).to_lowercase(),
+            zone: hop.zone.as_db_str().to_string(),
         });
     }
 }
@@ -2520,7 +2549,9 @@ pub fn stop_baseline(state: State<BaselineState>) -> Result<(), String> {
 .setup(|app| {
     let db_path = app.path().app_data_dir()?.join("packet_proof.sqlite");
     std::fs::create_dir_all(db_path.parent().unwrap())?;
-    let sink = db_writer::spawn_db_writer(db_path);
+    // .clone() here, not a plain move: Task 18 reuses `db_path` later in
+    // this same closure to open a second, read-only connection.
+    let sink = db_writer::spawn_db_writer(db_path.clone());
     app.manage(commands::DbSink(sink.clone()));
 
     let targets = mtr::baseline::fixed_targets(mtr::baseline::default_gateway());
@@ -3272,9 +3303,11 @@ impl SessionRunner {
 }
 ```
 
-Update the three existing `SessionRunner::start` call sites (Task 9's
-tests, Task 11's `commands::start_session`) to pass `None` for `duration`
-except where a duration is actually meaningful; the tests pass `None`.
+Update every existing `SessionRunner::start` call site to add the new
+final argument — that's four in total: the three tests in `mtr::session`'s
+`mod tests` (Task 9) plus `commands::start_session` (Task 11). All three
+tests pass `None`; `commands::start_session` is handled in Step 4 below,
+which passes the real duration through instead.
 
 - [ ] **Step 2: Add a test for the new parameter's plumbing**
 
