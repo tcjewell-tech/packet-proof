@@ -5,6 +5,7 @@ mod db;
 mod db_writer;
 mod elevation;
 mod mtr;
+mod procnet;
 
 fn main() {
     if elevation::decide_relaunch(&elevation::check_elevation()) {
