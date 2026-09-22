@@ -53,6 +53,21 @@ pub fn list_processes() -> Vec<ProcessInfo> {
     sort_by_name(processes)
 }
 
+pub fn connections_for_pid(pid: u32) -> ConnectionQuery {
+    #[cfg(target_os = "windows")]
+    return windows::connections_for_pid(pid);
+
+    #[cfg(target_os = "macos")]
+    return macos::connections_for_pid(pid);
+}
+
+pub fn list_candidate_processes() -> Vec<ProcessInfo> {
+    list_processes()
+        .into_iter()
+        .filter(|p| matches!(connections_for_pid(p.pid), ConnectionQuery::Found(_)))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

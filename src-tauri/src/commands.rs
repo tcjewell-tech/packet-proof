@@ -6,6 +6,7 @@ use tauri::{AppHandle, Emitter, State};
 use crate::mtr::baseline::{default_gateway, fixed_targets, BaselineLogger};
 use crate::mtr::session::SessionRunner;
 use crate::mtr::trippy_engine::TrippyEngine;
+use crate::procnet::{ConnectionQuery, ProcessInfo};
 
 pub struct SessionState(pub Mutex<Option<SessionRunner>>);
 
@@ -71,4 +72,14 @@ pub fn stop_baseline(state: State<BaselineState>) -> Result<(), String> {
     } else {
         Err("baseline is not running".to_string())
     }
+}
+
+#[tauri::command]
+pub fn list_candidate_processes() -> Vec<ProcessInfo> {
+    crate::procnet::list_candidate_processes()
+}
+
+#[tauri::command]
+pub fn list_connections_for_pid(pid: u32) -> ConnectionQuery {
+    crate::procnet::connections_for_pid(pid)
 }

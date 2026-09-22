@@ -37,7 +37,9 @@ fn main() {
             commands::start_session,
             commands::stop_session,
             commands::start_baseline,
-            commands::stop_baseline
+            commands::stop_baseline,
+            commands::list_candidate_processes,
+            commands::list_connections_for_pid
         ])
         .run(tauri::generate_context!())
         .expect("error while running Packet Proof");
