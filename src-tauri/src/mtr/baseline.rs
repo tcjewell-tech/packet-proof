@@ -51,14 +51,6 @@ impl BaselineLogger {
 
         std::thread::spawn(move || {
             use std::sync::atomic::Ordering;
-            // The raw-socket ICMP work below and Tauri's WebView2/window setup
-            // both do heavy native, concurrent OS-level initialization; starting
-            // it the instant this thread spawns races that startup and reliably
-            // segfaults on Windows (observed via repeated crashes at a fixed
-            // offset in release builds, gone the instant this thread is made to
-            // start even slightly later). Giving the window a moment to finish
-            // initializing before the first probe avoids the race entirely.
-            std::thread::sleep(std::time::Duration::from_secs(2));
             while !stop_flag_for_thread.load(Ordering::Relaxed) {
                 for target in &targets {
                     if stop_flag_for_thread.load(Ordering::Relaxed) {
