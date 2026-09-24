@@ -59,6 +59,19 @@ pub fn start_session(
     Ok(())
 }
 
+/// The session the backend actually has running, if any. The frontend only
+/// ever learns about session start/end through the `session-started` /
+/// `session-ended` events, so if the webview reloads (or the listener misses
+/// an event) after a session was started, its buttons can get stuck showing
+/// "not running" while the backend still holds one — `start_session` then
+/// fails with "already running" and there is no enabled Stop button left to
+/// recover with. Calling this once on load lets the frontend resync its
+/// controls to the backend's real state instead of trusting its own memory.
+#[tauri::command]
+pub fn session_status(state: State<SessionState>) -> Option<String> {
+    state.0.lock().unwrap().as_ref().map(|r| r.session_id.clone())
+}
+
 #[tauri::command]
 pub fn stop_session(state: State<SessionState>) -> Result<(), String> {
     let mut guard = state.0.lock().unwrap();

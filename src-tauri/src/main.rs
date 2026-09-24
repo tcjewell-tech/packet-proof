@@ -43,6 +43,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::start_session,
             commands::stop_session,
+            commands::session_status,
             commands::start_baseline,
             commands::stop_baseline,
             commands::list_candidate_processes,

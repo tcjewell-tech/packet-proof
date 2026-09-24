@@ -87,7 +87,17 @@ async function exportSessionReport() {
 
 // Wired here rather than with inline `onclick` attributes: those are inline
 // scripts, which a `script-src 'self'` CSP blocks.
+async function syncSessionStateFromBackend() {
+  const sessionId = await window.__TAURI__.core.invoke("session_status");
+  if (sessionId) {
+    currentSessionId = sessionId;
+    setSessionRunning(true);
+  }
+}
+
 document.addEventListener("DOMContentLoaded", () => {
+  syncSessionStateFromBackend().catch((err) => setSessionError(String(err)));
+
   const durationSelect = document.getElementById("duration-select");
   const customInput = document.getElementById("custom-duration-input");
   durationSelect?.addEventListener("change", () => {
