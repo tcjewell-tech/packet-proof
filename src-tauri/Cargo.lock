@@ -2669,6 +2669,7 @@ dependencies = [
  "sysinfo",
  "tauri",
  "tauri-build",
+ "tracing",
  "trippy-core",
  "uuid",
  "windows 0.62.2",

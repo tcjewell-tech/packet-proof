@@ -18,6 +18,14 @@ sysinfo = "0.39.6"
 genpdf = { version = "0.2.0", features = ["images"] }
 plotters = { version = "0.3.7", default-features = false, features = ["bitmap_backend", "bitmap_encoder", "line_series", "ttf"] }
 trippy-core = "0.13.0"
+# Compiles out trippy-core's #[instrument] spans (and any other tracing use in
+# the dependency graph) entirely, rather than just leaving them unused. We
+# never install a tracing subscriber, and the span enter/exit machinery those
+# instrumented raw-socket calls go through crashes intermittently on Windows
+# release builds with 0xc0000005 inside tracing_core::dispatcher::Dispatch::exit,
+# confirmed via minidump analysis. Cargo feature unification means this one
+# extra feature on our own tracing dependency applies build-wide.
+tracing = { version = "0.1.41", features = ["max_level_off"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62.2", features = [

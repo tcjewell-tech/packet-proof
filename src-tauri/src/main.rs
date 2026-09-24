@@ -14,23 +14,6 @@ fn main() {
         elevation::relaunch_elevated();
     }
 
-    // Force the raw-socket/ICMP machinery's one-time OS-level setup (DLL
-    // loading, WinSock init) to happen here, synchronously, on the main
-    // thread, before Tauri creates the window and before the baseline
-    // logger's background thread starts. Without this, that first-use
-    // initialization can run concurrently on two threads at once — this
-    // thread via WebView2/window creation touching its own set of system
-    // DLLs, the baseline thread via its first probe — and that race
-    // reliably segfaults release builds (reproduced repeatedly; never in
-    // debug, never when only one of the two runs, never in unit tests,
-    // which only ever exercise a fake probe engine). Doing the first
-    // socket-touching call here, alone, closes the race.
-    let _ = mtr::engine::ProbeEngine::probe_once(
-        &mtr::trippy_engine::TrippyEngine,
-        std::net::IpAddr::from([127, 0, 0, 1]),
-        std::time::Duration::from_millis(200),
-    );
-
     tauri::Builder::default()
         .setup(|app| {
             use tauri::Manager;
