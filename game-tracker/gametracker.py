@@ -179,12 +179,26 @@ def plot():
     rows = "".join(f"<tr><td>{html.escape(g)}</td><td>{h:.1f}</td></tr>" for h, g in totals)
     data = json.dumps({"labels": days, "datasets": datasets}).replace("</", "<\\/")
     with open(REPORT, "w", encoding="utf-8") as f:
+        # tokens from the Game Tracker design system (https://claude.ai/artifact/Qa6AgGKyAADf5yJ2VhjZn1)
         f.write(f"""<!doctype html><meta charset="utf-8"><title>Game time</title>
-<style>body{{font:14px system-ui;margin:24px;max-width:1100px}}td{{padding:2px 12px}}</style>
-<h2>Hours played per day</h2><canvas id="c"></canvas>
-<h2>Totals</h2><table><tr><th>Game</th><th>Hours</th></tr>{rows}</table>
+<style>
+:root{{--surface-raised:#ffffff;--ink:#000000;--ink-muted:#5c5c5c;--button-border:#adadad;--space-4:24px;color-scheme:light}}
+@media (prefers-color-scheme:dark){{:root{{--surface-raised:#2b2b2b;--ink:#f2f2f2;--ink-muted:#a8a8a8;--button-border:#5a5a5a;color-scheme:dark}}}}
+body{{margin:0;background:var(--surface-raised);color:var(--ink);font:400 14px/20px "Segoe UI",system-ui,sans-serif}}
+main{{max-width:1100px;margin:0 auto;padding:var(--space-4)}}
+h2{{font-size:21px;line-height:28px;font-weight:700;margin:var(--space-4) 0 12px}}
+table{{border-collapse:collapse;font-variant-numeric:tabular-nums}}
+th{{color:var(--ink-muted);font-weight:400;text-align:left}}
+td,th{{padding:4px 24px 4px 0;border-bottom:1px solid var(--button-border)}}
+td:last-child,th:last-child{{text-align:right;padding-right:0}}
+</style>
+<main><h2>Hours played per day</h2><canvas id="c"></canvas>
+<h2>Totals</h2><table><tr><th>Game</th><th>Hours</th></tr>{rows}</table></main>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
-<script>new Chart(c, {{type: "bar", data: {data},
+<script>const css = getComputedStyle(document.documentElement), tok = n => css.getPropertyValue(n).trim();
+Chart.defaults.color = tok("--ink-muted"); Chart.defaults.borderColor = tok("--button-border");
+Chart.defaults.font.family = '"Segoe UI", system-ui, sans-serif'; Chart.defaults.font.size = 14;
+new Chart(c, {{type: "bar", data: {data},
   options: {{scales: {{x: {{stacked: true}}, y: {{stacked: true, title: {{display: true, text: "hours"}}}}}}}}}});</script>""")
     webbrowser.open(REPORT)
     return True
