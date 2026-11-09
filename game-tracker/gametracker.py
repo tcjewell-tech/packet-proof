@@ -3,6 +3,7 @@
   python gametracker.py watch [seconds]   leave running (use pythonw for no window)
   python gametracker.py plot              writes report.html and opens it
   python gametracker.py games             lists the games it knows how to detect
+  pythonw gui.py                          window + system tray icon (needs pystray, pillow)
 """
 import ctypes, glob, html, json, os, re, sqlite3, sys, time, webbrowser, winreg
 from collections import defaultdict
@@ -138,16 +139,23 @@ def open_db():
     return db
 
 
-def watch(interval=60):
+def watch(interval=60, stop=None, on_tick=None):
+    """Sample every `interval` s until `stop` (a threading.Event) is set; on_tick(games) after each sample."""
     db, folders, refreshed = open_db(), {}, 0
-    while True:
+    while not (stop and stop.is_set()):
         if time.time() - refreshed > 3600:  # pick up newly installed games
             folders, refreshed = discover_games(), time.time()
         games = {g for g in (game_for(e, folders) for e in running_exes()) if g}
         now = datetime.now().isoformat(timespec="seconds")
         with db:
             db.executemany("INSERT INTO samples VALUES (?,?,?)", [(now, g, interval) for g in games])
-        time.sleep(interval)
+        if on_tick:
+            on_tick(games)
+        if stop:
+            stop.wait(interval)
+        else:
+            time.sleep(interval)
+    db.close()
 
 
 # ---- plotting ----
@@ -162,7 +170,7 @@ def daily_hours(rows):
 def plot():
     by_day = daily_hours(open_db().execute("SELECT ts, game, secs FROM samples").fetchall())
     if not by_day:
-        sys.exit("No data yet: run `watch` while you play.")
+        return False
     first, last = date.fromisoformat(min(by_day)), date.fromisoformat(max(by_day))
     days = [str(first + timedelta(i)) for i in range((last - first).days + 1)]
     games = sorted({g for d in by_day.values() for g in d})
@@ -179,6 +187,7 @@ def plot():
 <script>new Chart(c, {{type: "bar", data: {data},
   options: {{scales: {{x: {{stacked: true}}, y: {{stacked: true, title: {{display: true, text: "hours"}}}}}}}}}});</script>""")
     webbrowser.open(REPORT)
+    return True
 
 
 if __name__ == "__main__":
@@ -186,7 +195,7 @@ if __name__ == "__main__":
     if cmd == "watch":
         watch(int(sys.argv[2]) if len(sys.argv) > 2 else 60)
     elif cmd == "plot":
-        plot()
+        plot() or sys.exit("No data yet: run `watch` while you play.")
     elif cmd == "games":
         for folder, name in sorted(discover_games().items(), key=lambda x: x[1].lower()):
             print(f"{name:40} {folder}")

@@ -8,7 +8,18 @@ Games are found from each launcher's own install records: Steam, Battle.net, EA 
 RetroArch = C:\RetroArch
 ```
 
-## Use
+## Window and tray icon
+
+```bash
+pip install -r requirements.txt
+```
+
+```bash
+pythonw gui.py
+```
+Opens a small window and puts a dot in the system tray: green while tracking, grey when stopped. Hover it to see the game being tracked. Tracking starts as soon as it opens. Closing the window hides it to the tray; right-click the tray icon for Show, Start/Stop tracking, Open chart and Quit.
+
+## Command line (no extra packages)
 
 ```bash
 python gametracker.py games
@@ -27,4 +38,4 @@ Writes `report.html` and opens it in your browser.
 
 ## Start with Windows
 
-Press Win+R, type `shell:startup`, and add a shortcut there with the target `pythonw "<full path>\gametracker.py" watch`.
+Press Win+R, type `shell:startup`, and add a shortcut there with the target `pythonw "<full path>\gui.py"` (or `gametracker.py watch` for no window or tray icon).

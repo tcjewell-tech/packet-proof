@@ -27,6 +27,21 @@ class GameTrackerTest(unittest.TestCase):
         self.assertEqual(out["2026-11-09"]["A"], 1.0)
         self.assertAlmostEqual(out["2026-11-10"]["B"], 1 / 60)
 
+    def test_watch_stops_and_records(self):
+        import os, tempfile, threading
+        from unittest import mock
+        stop, ticks = threading.Event(), []
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d, \
+                mock.patch.object(gt, "DB", os.path.join(d, "t.db")), \
+                mock.patch.object(gt, "discover_games", lambda: {gt.norm(r"M:\StarCraft II"): "StarCraft II"}), \
+                mock.patch.object(gt, "running_exes", lambda: [r"M:\StarCraft II\SC2.exe"] * 2):
+            gt.watch(5, stop, lambda g: (ticks.append(g), stop.set()))
+            db = gt.open_db()
+            rows = db.execute("SELECT game, secs FROM samples").fetchall()
+            db.close()
+        self.assertEqual(ticks, [{"StarCraft II"}])
+        self.assertEqual(rows, [("StarCraft II", 5)])  # two processes, one sample
+
 
 if __name__ == "__main__":
     unittest.main()
