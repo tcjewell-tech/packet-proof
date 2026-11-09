@@ -38,4 +38,4 @@ Writes `report.html` and opens it in your browser.
 
 ## Start with Windows
 
-Tick **Start with Windows** in the window (or the tray icon's **Options** menu). The other options there: start minimized to the tray, send close and minimize to the tray, and start tracking on launch; they are saved in `settings.json`. For the CLI without a window, put a shortcut to `pythonw "<full path>gametracker.py" watch` in `shell:startup`.
+Tick **Start with Windows** in the window (or the tray icon's **Options** menu). The other options there: start minimized to the tray, send close and minimize to the tray, and start tracking on launch; they are saved in `settings.json`. For the CLI without a window, put a shortcut to `pythonw "<full path>\gametracker.py" watch` in `shell:startup`.
