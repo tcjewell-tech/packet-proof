@@ -1,6 +1,6 @@
 # Game time tracker
 
-Logs which games are running once a minute and charts hours played per day. Python 3 standard library only, Windows.
+Logs which games are running once a minute and charts hours played per day. Windows, Python 3. The command line uses only the standard library; the window and tray icon need two packages.
 
 Games are found from each launcher's own install records: Steam, Battle.net, EA app, Activision, Epic, GOG, Ubisoft Connect and the Xbox app. For anything else (emulators, DRM-free games), add lines to `games.txt` next to the script:
 
