@@ -10,7 +10,3 @@
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
-game-tracker/games.db
-game-tracker/games.txt
-game-tracker/report.html
-game-tracker/settings.json
